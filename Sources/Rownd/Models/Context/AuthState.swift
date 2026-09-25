@@ -89,6 +89,7 @@ extension AuthState: Codable {
         case refreshToken = "refresh_token"
         case isVerifiedUser = "is_verified_user"
         case hasPreviouslySignedIn = "has_previously_signed_in"
+        case userId = "user_id"
         case challengeId = "challenge_id"
         case userIdentifier = "user_identifier"
         case profileHydrationPendingSessionIdentity = "profile_hydration_pending_session_identity"

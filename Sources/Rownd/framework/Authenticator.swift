@@ -190,49 +190,47 @@ actor Authenticator: AuthenticatorProtocol {
     }
 
     private func syncCompatibilityAuthState(accessToken: String) async throws -> AuthState {
-        let currentAuthState = AuthenticatorSubscription.currentAuthState
-            ?? Context.currentContext.store.state.auth
-        let isSameSession = SuperTokensSessionBridge.tokensBelongToSameSession(
-            currentAuthState.accessToken,
-            accessToken
-        )
-        var newAuthState = isSameSession ? currentAuthState : AuthState(
-            hasPreviouslySignedIn: currentAuthState.hasPreviouslySignedIn
-        )
-        newAuthState.accessToken = accessToken
-        newAuthState.refreshToken = nil
-        let stableIdentity = SuperTokensSessionBridge.stableSessionIdentity(from: accessToken)
-        if !isSameSession {
-            newAuthState.profileHydrationPendingSessionIdentity = stableIdentity
-        } else if newAuthState.profileHydrationPendingSessionIdentity != stableIdentity {
-            newAuthState.profileHydrationPendingSessionIdentity = nil
-        }
-        newAuthState.hasPreviouslySignedIn = newAuthState.hasPreviouslySignedIn == true
-            || newAuthState.isAuthenticated
-
-        let authStateToCommit = newAuthState
-        let didCommit = await MainActor.run {
+        // Profile reducers can update userId without updating the authenticator cache.
+        // Read, derive, persist and publish from the live store in one main-actor turn.
+        return try await MainActor.run {
             let store = Context.currentContext.store
-            guard var candidate = store.state else { return false }
-            candidate.auth = authStateToCommit
+            guard var candidate = store.state else {
+                throw AuthenticationError.serverError(details: "Rownd state is unavailable")
+            }
+            let currentAuthState = candidate.auth
+            let isSameSession = SuperTokensSessionBridge.tokensBelongToSameSession(
+                currentAuthState.accessToken,
+                accessToken
+            )
+            var newAuthState = isSameSession ? currentAuthState : AuthState(
+                hasPreviouslySignedIn: currentAuthState.hasPreviouslySignedIn
+            )
+            newAuthState.accessToken = accessToken
+            newAuthState.refreshToken = nil
+            let stableIdentity = SuperTokensSessionBridge.stableSessionIdentity(from: accessToken)
+            if !isSameSession {
+                newAuthState.profileHydrationPendingSessionIdentity = stableIdentity
+            } else if newAuthState.profileHydrationPendingSessionIdentity != stableIdentity {
+                newAuthState.profileHydrationPendingSessionIdentity = nil
+            }
+            newAuthState.hasPreviouslySignedIn = newAuthState.hasPreviouslySignedIn == true
+                || newAuthState.isAuthenticated
+
+            candidate.auth = newAuthState
             if !isSameSession {
                 candidate.user = UserState()
             }
-            guard persistState(candidate) else { return false }
-            // Keep Rownd's compatibility auth state in sync with the SuperTokens session.
-            store.dispatch(SetAuthState(payload: authStateToCommit))
+            guard persistState(candidate) else {
+                throw AuthenticationError.serverError(
+                    details: "Failed to persist compatibility state for the current SuperTokens session"
+                )
+            }
+            store.dispatch(SetAuthState(payload: newAuthState))
             if !isSameSession {
                 store.dispatch(SetUserState(payload: UserState()))
             }
-            return true
+            return newAuthState
         }
-        guard didCommit else {
-            throw AuthenticationError.serverError(
-                details: "Failed to persist compatibility state for the current SuperTokens session"
-            )
-        }
-        AuthenticatorSubscription.currentAuthState = authStateToCommit
-        return authStateToCommit
     }
 
     private func isAccessTokenValid(_ accessToken: String) -> Bool {
