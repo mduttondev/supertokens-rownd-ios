@@ -86,6 +86,13 @@ jobs:
           lima: v1.2.1
           colima: v0.9.1
 
+      - name: Connect Testcontainers to Colima
+        run: |
+          docker_host="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
+          docker --host "$docker_host" info
+          echo "DOCKER_HOST=$docker_host" >> "$GITHUB_ENV"
+          echo "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock" >> "$GITHUB_ENV"
+
       - name: Install iOS SDK dependencies
         run: npm ci
 
