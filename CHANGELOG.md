@@ -1,5 +1,10 @@
 # Changelog
 
+## <small>0.2.5 (2026-09-28)</small>
+
+* ci: expose Colima socket to release test harness ([95bd10b](https://github.com/supertokens/supertokens-rownd-ios/commit/95bd10b))
+* fix: preserve hydrated identity during token reads and session reloads ([f73fe6c](https://github.com/supertokens/supertokens-rownd-ios/commit/f73fe6c))
+
 ## <small>0.2.4 (2026-09-23)</small>
 
 * fix: clear .io Hub website data on sign-out ([06b0b30](https://github.com/supertokens/supertokens-rownd-ios/commit/06b0b30))
