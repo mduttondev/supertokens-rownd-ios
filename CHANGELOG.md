@@ -1,5 +1,9 @@
 # Changelog
 
+## <small>0.2.6 (2026-09-29)</small>
+
+* fix: clear legacy session when token refresh fails ([2b0087b](https://github.com/supertokens/supertokens-rownd-ios/commit/2b0087b))
+
 ## <small>0.2.5 (2026-09-28)</small>
 
 * ci: expose Colima socket to release test harness ([95bd10b](https://github.com/supertokens/supertokens-rownd-ios/commit/95bd10b))
