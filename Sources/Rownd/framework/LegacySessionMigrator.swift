@@ -227,13 +227,7 @@ enum LegacySessionMigrator {
                 await coordinator.updateKey(from: previousAttempt, to: attempt)
             } catch {
                 logger.warning("Failed to refresh legacy Rownd session before migration: \(String(describing: error))")
-                // The legacy token endpoint reports invalid refresh tokens with HTTP 400.
-                if let httpError = error as? LegacyTokenRefreshHTTPError,
-                   httpError.statusCode == 400 || httpError.statusCode == 401 {
-                    await finishInvalidSession(attempt, dependencies: dependencies)
-                } else {
-                    await finishPreRequestFailure(attempt, dependencies: dependencies)
-                }
+                await finishInvalidSession(attempt, dependencies: dependencies)
                 return
             }
         }
