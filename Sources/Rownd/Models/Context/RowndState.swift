@@ -14,7 +14,8 @@ private let log = Logger(subsystem: "io.rownd.sdk", category: "state")
 
 private let STORAGE_STATE_KEY = "RowndState"
 
-private let debouncer = Debouncer(delay: 0.1) // 100ms
+private let saveDebouncer = Debouncer(delay: 0.1)
+private let reloadDebouncer = Debouncer(delay: 0.1)
 
 public struct RowndState: Codable, Hashable {
     public var isStateLoaded = false
@@ -45,7 +46,7 @@ extension RowndState {
     }
 
     internal func save() {
-        debouncer.debounce(action: {
+        saveDebouncer.debounce(action: {
             self.saveImmediately()
         })
     }
@@ -73,11 +74,7 @@ extension RowndState {
 //        log.trace("initial store state: \(String(describing: existingStateStr))")
 
         DarwinNotificationManager.shared.startObserving(name: "io.rownd.events.StateUpdated") {
-            debouncer.debounce {
-                Task {
-                    await self.reload()
-                }
-            }
+            self.scheduleReload(store)
         }
 
         guard let existingStateStr = existingStateStr else {
@@ -107,6 +104,14 @@ extension RowndState {
         return store.state
     }
 
+    internal func scheduleReload(_ store: Store<RowndState>) {
+        reloadDebouncer.debounce {
+            Task {
+                await self.reload(store)
+            }
+        }
+    }
+
     internal func reload() async {
         await reload(Context.currentContext.store)
     }
@@ -128,11 +133,12 @@ extension RowndState {
 
             log.trace("Retrieved auth state: \(String(describing: decoded.auth), privacy: .private)")
 
-            if decoded.lastUpdateTs.timeIntervalSinceReferenceDate == store.state.lastUpdateTs.timeIntervalSinceReferenceDate {
-                return
-            }
-
             await MainActor.run { [decoded] in
+                // A delayed notification can read a snapshot older than pending local writes.
+                // Check at dispatch time so updates made during the actor hop also win.
+                guard decoded.lastUpdateTs > store.state.lastUpdateTs else {
+                    return
+                }
                 store.dispatch(ReloadRowndState(payload: decoded))
             }
         } catch {
@@ -195,6 +201,14 @@ func rowndStateReducer(action: Action, state: RowndState?) -> RowndState {
             user: userReducer(action: action, state: state?.user),
             signIn: signInReducer(action: action, state: state?.signIn)
         )
+
+        if let priorRevision = state?.lastUpdateTs.timeIntervalSinceReferenceDate {
+            // This timestamp also orders snapshots; local edits must advance after clock rollback.
+            newState.lastUpdateTs = Date(timeIntervalSinceReferenceDate: max(
+                newState.lastUpdateTs.timeIntervalSinceReferenceDate,
+                priorRevision.nextUp
+            ))
+        }
 
         newState.save()
     }

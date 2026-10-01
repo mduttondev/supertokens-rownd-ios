@@ -14,7 +14,7 @@ import { verifySession } from 'supertokens-node/recipe/session/framework/express
 import ThirdParty from 'supertokens-node/recipe/thirdparty';
 import UserMetadata from 'supertokens-node/recipe/usermetadata';
 import { GenericContainer, Network, type StartedNetwork, type StartedTestContainer, Wait } from 'testcontainers';
-import { logDockerDiagnostics } from './startup';
+import { containerStartupLogger, containerStartupTimeoutMs, logDockerDiagnostics } from './startup';
 
 type HarnessCounters = {
   createSession: number;
@@ -499,6 +499,7 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
 
 async function createIntegrationHarness(): Promise<IntegrationHarness> {
   const startupStarted = Date.now();
+  const readinessTimeoutMs = containerStartupTimeoutMs();
   const logStage = (stage: string) => console.log(`[iOS harness +${((Date.now() - startupStarted) / 1000).toFixed(1)}s] ${stage}`);
   resetCounters();
   const { privateKey: applePrivateKey } = generateKeyPairSync('ec', {
@@ -509,6 +510,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   logStage('Creating Docker network (including Testcontainers runtime/reaper initialization)');
   network = await new Network().start();
   logStage('Docker network ready; pulling/starting Postgres');
+  const postgresLogs = containerStartupLogger('Postgres');
   postgresContainer = await new GenericContainer('postgres:14')
     .withNetwork(network)
     .withNetworkAliases('postgres')
@@ -518,11 +520,16 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       POSTGRES_DB: 'supertokens',
     })
     .withExposedPorts(5432)
-    .withWaitStrategy(Wait.forLogMessage('database system is ready to accept connections'))
+    // The entrypoint's temporary initialization server emits the same message first.
+    .withWaitStrategy(Wait.forLogMessage('database system is ready to accept connections', 2))
+    .withStartupTimeout(readinessTimeoutMs)
+    .withLogConsumer(postgresLogs.consume)
     .start();
+  postgresLogs.stop();
 
   const coreImage = process.env.E2E_CORE_IMAGE || 'supertokens/supertokens-postgresql:12.0.10';
-  logStage('Postgres ready; pulling/starting SuperTokens Core');
+  logStage(`Postgres ready; pulling/starting SuperTokens Core (readiness budget ${readinessTimeoutMs / 1000}s, excluding image pull)`);
+  const coreLogs = containerStartupLogger('Core');
   coreContainer = await new GenericContainer(coreImage)
     .withNetwork(network)
     .withEnvironment({
@@ -531,8 +538,11 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       REFRESH_TOKEN_VALIDITY: '144000',
     })
     .withExposedPorts(3567)
-    .withWaitStrategy(Wait.forHttp('/hello', 3567))
+    .withWaitStrategy(Wait.forHttp('/hello', 3567, { abortOnContainerExit: true }))
+    .withStartupTimeout(readinessTimeoutMs)
+    .withLogConsumer(coreLogs.consume)
     .start();
+  coreLogs.stop();
 
   logStage('SuperTokens Core ready; enabling harness features');
   const coreBaseURI = `http://${coreContainer.getHost()}:${coreContainer.getMappedPort(3567)}`;

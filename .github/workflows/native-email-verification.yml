@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 60
     env:
       IOS_E2E_BACKEND_STARTUP_TIMEOUT_MS: '600000'
+      # Cold pulls took ~400s; allow 180s for readiness within the 600s backend budget.
+      IOS_E2E_CONTAINER_STARTUP_TIMEOUT_MS: '180000'
       DEBUG: testcontainers,testcontainers:pull
 
     steps:
