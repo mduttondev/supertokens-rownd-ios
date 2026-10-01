@@ -14,6 +14,7 @@ import { verifySession } from 'supertokens-node/recipe/session/framework/express
 import ThirdParty from 'supertokens-node/recipe/thirdparty';
 import UserMetadata from 'supertokens-node/recipe/usermetadata';
 import { GenericContainer, Network, type StartedNetwork, type StartedTestContainer, Wait } from 'testcontainers';
+import { logDockerDiagnostics } from './startup';
 
 type HarnessCounters = {
   createSession: number;
@@ -489,19 +490,25 @@ export async function startIntegrationHarness(): Promise<IntegrationHarness> {
   try {
     return await createIntegrationHarness();
   } catch (error) {
+    console.error('[iOS harness] Startup failed before cleanup', error);
+    await logDockerDiagnostics();
     await stopIntegrationHarness();
     throw error;
   }
 }
 
 async function createIntegrationHarness(): Promise<IntegrationHarness> {
+  const startupStarted = Date.now();
+  const logStage = (stage: string) => console.log(`[iOS harness +${((Date.now() - startupStarted) / 1000).toFixed(1)}s] ${stage}`);
   resetCounters();
   const { privateKey: applePrivateKey } = generateKeyPairSync('ec', {
     namedCurve: 'P-256',
   });
   const testApplePrivateKey = applePrivateKey.export({ type: 'sec1', format: 'pem' }).toString();
 
+  logStage('Creating Docker network (including Testcontainers runtime/reaper initialization)');
   network = await new Network().start();
+  logStage('Docker network ready; pulling/starting Postgres');
   postgresContainer = await new GenericContainer('postgres:14')
     .withNetwork(network)
     .withNetworkAliases('postgres')
@@ -515,6 +522,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     .start();
 
   const coreImage = process.env.E2E_CORE_IMAGE || 'supertokens/supertokens-postgresql:12.0.10';
+  logStage('Postgres ready; pulling/starting SuperTokens Core');
   coreContainer = await new GenericContainer(coreImage)
     .withNetwork(network)
     .withEnvironment({
@@ -526,6 +534,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     .withWaitStrategy(Wait.forHttp('/hello', 3567))
     .start();
 
+  logStage('SuperTokens Core ready; enabling harness features');
   const coreBaseURI = `http://${coreContainer.getHost()}:${coreContainer.getMappedPort(3567)}`;
   const baseLicenseResponse = await fetch(`${coreBaseURI}/ee/license`, {
     method: 'PUT',
@@ -538,6 +547,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   // A named app allows the expiry fixture to change its lifetime via Core's API;
   // the default app's base configuration is immutable at runtime.
   const coreAppId = 'rownd-ios-harness';
+  logStage('Creating Core harness app');
   const appResponse = await fetch(`${coreBaseURI}/recipe/multitenancy/app/v2`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'cdi-version': '5.3' },
@@ -547,6 +557,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     throw new Error(`Failed to create harness app: ${appResponse.status} ${await appResponse.text()}`);
   }
   const coreConnectionURI = `${coreBaseURI}/appid-${coreAppId}`;
+  logStage('Enabling account linking for harness app');
   const licenseResponse = await fetch(`${coreConnectionURI}/ee/license`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -557,6 +568,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   }
 
   const app = express();
+  logStage('Core configuration complete; starting harness HTTP server');
 
   const started = await new Promise<{ server: Server; port: number }>((resolve, reject) => {
     const listeningServer = app.listen(port, '127.0.0.1', () => {
@@ -576,6 +588,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   server = started.server;
   const apiUrl = `http://127.0.0.1:${started.port}`;
 
+  logStage('HTTP server listening; initializing SDK and routes');
   SuperTokens.init({
     supertokens: {
       connectionURI: coreConnectionURI,

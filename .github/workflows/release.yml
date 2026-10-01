@@ -47,13 +47,33 @@ jobs:
         run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
 
       - name: Run package and unit tests
-        run: npm run test:pr
+        run: npm run test:version && npm run test:package && npm run test:example:unit
+
+  cocoapods:
+    name: CocoaPods
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1.7.0
+        with:
+          xcode-version: 26.0.1
+
+      - name: Run CocoaPods consumer runtime test
+        run: bash Tests/CocoaPodsRuntime/run.sh
 
   e2e:
     name: E2E
     if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_dispatch' || !inputs.skip_e2e)
     runs-on: macos-15-intel
     timeout-minutes: 60
+    env:
+      IOS_E2E_BACKEND_STARTUP_TIMEOUT_MS: '600000'
+      DEBUG: testcontainers,testcontainers:pull
     steps:
       - name: Checkout iOS SDK
         uses: actions/checkout@v4
@@ -109,11 +129,12 @@ jobs:
 
   release:
     name: Release
-    needs: [test, e2e]
+    needs: [test, cocoapods, e2e]
     if: >-
       always() &&
       github.ref == 'refs/heads/main' &&
       needs.test.result == 'success' &&
+      needs.cocoapods.result == 'success' &&
       (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
     runs-on: macos-15
     timeout-minutes: 30

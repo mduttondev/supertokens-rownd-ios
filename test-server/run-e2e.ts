@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { delay, stopChild } from './process';
+import { backendStartupTimeoutMs, logDockerDiagnostics } from './startup';
 
 const harnessPort = Number(process.env.IOS_HARNESS_PORT || 3100);
 const apiUrl = `http://127.0.0.1:${harnessPort}`;
@@ -94,20 +95,24 @@ function assertResourcesRunning() {
 }
 
 async function waitForHealth(url: string, timeoutMs = 120_000) {
+  console.log(`Waiting up to ${timeoutMs / 1000}s for ${url}`);
+  let lastStatus = 'no response';
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     assertResourcesRunning();
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
       if (response.ok) {
+        console.log(`Ready: ${url}`);
         return;
       }
+      lastStatus = `HTTP ${response.status}`;
     } catch {
       // Keep polling while the harness process is alive.
     }
     await delay(500);
   }
-  throw new Error(`Timed out waiting for ${url}`);
+  throw new Error(`Timed out after ${timeoutMs / 1000}s waiting for ${url} (last status: ${lastStatus})`);
 }
 
 function shutdown() {
@@ -150,7 +155,9 @@ async function stopResource(
 }
 
 async function main() {
+  const startupTimeoutMs = backendStartupTimeoutMs();
   let failure: unknown;
+  let backendReady = false;
   try {
     await startLocalHub();
     harnessProcess = start(process.execPath, ['--import', 'tsx', 'test-server/run-harness.ts']);
@@ -166,7 +173,8 @@ async function main() {
       handleHarnessFailure(new Error(`Integration harness exited unexpectedly (code ${code}, signal ${signal})`));
     });
 
-    await Promise.all([waitForHealth(`${apiUrl}/health`), waitForHealth(hubHealthUrl)]);
+    await Promise.all([waitForHealth(`${apiUrl}/health`, startupTimeoutMs), waitForHealth(hubHealthUrl)]);
+    backendReady = true;
     if (process.env.IOS_E2E_ONLY_UI !== '1') {
       await run('npm', ['run', 'test:integration']);
       assertResourcesRunning();
@@ -177,6 +185,10 @@ async function main() {
     assertResourcesRunning();
   } catch (error) {
     failure = error;
+    console.error('iOS E2E failure before cleanup', error);
+    if (harnessProcess && !backendReady) {
+      await logDockerDiagnostics();
+    }
   }
 
   try {

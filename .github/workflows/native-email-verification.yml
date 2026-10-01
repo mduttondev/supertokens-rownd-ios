@@ -30,6 +30,9 @@ jobs:
     name: Validate selected versions
     runs-on: macos-15-intel
     timeout-minutes: 60
+    env:
+      IOS_E2E_BACKEND_STARTUP_TIMEOUT_MS: '600000'
+      DEBUG: testcontainers,testcontainers:pull
 
     steps:
       - name: Checkout iOS SDK
@@ -62,6 +65,13 @@ jobs:
         with:
           lima: v1.2.1
           colima: v0.9.1
+
+      - name: Connect Testcontainers to Colima
+        run: |
+          docker_host="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
+          docker --host "$docker_host" info
+          echo "DOCKER_HOST=$docker_host" >> "$GITHUB_ENV"
+          echo "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: |
