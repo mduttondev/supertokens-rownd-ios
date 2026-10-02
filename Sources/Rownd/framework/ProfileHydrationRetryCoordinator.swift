@@ -61,6 +61,11 @@ internal actor ProfileHydrationRetryCoordinator {
         scheduledIdentity == identity && task != nil
     }
 
+    // Joins the task captured here, including its cleanup, but not any replacement task.
+    func waitForCurrentTaskToFinish() async {
+        await task?.value
+    }
+
     private func finish(
         identity: SuperTokensSessionBridge.StableSessionIdentity,
         taskID: UUID

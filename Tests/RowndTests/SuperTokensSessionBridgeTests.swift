@@ -761,15 +761,14 @@ import AnyCodable
                 }
             )
 
-            #expect(await waitUntil {
-                await MainActor.run {
-                    isolatedStore.state.user.data["email"]?.value as? String
-                        == "retried@example.com"
-                }
-            })
+            await coordinator.waitForCurrentTaskToFinish()
             #expect(await responses.count == 2)
             #expect(await !coordinator.isScheduled(for: identity.stable))
             await MainActor.run {
+                #expect(
+                    isolatedStore.state.user.data["email"]?.value as? String
+                        == "retried@example.com"
+                )
                 #expect(
                     isolatedStore.state.auth.profileHydrationPendingSessionIdentity == nil
                 )

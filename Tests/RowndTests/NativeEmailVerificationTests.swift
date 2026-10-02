@@ -498,14 +498,11 @@ import Testing
                 persistState: { _ in true }
             )
 
-            #expect(await waitForCondition {
-                await MainActor.run {
-                    store.state.user.data["email"]?.value as? String == "canonical@example.com"
-                }
-            })
+            await coordinator.waitForCurrentTaskToFinish()
             #expect(await responses.count == 2)
             #expect(await !coordinator.isScheduled(for: identity.stable))
             await MainActor.run {
+                #expect(store.state.user.data["email"]?.value as? String == "canonical@example.com")
                 #expect(store.state.auth.profileHydrationPendingSessionIdentity == nil)
             }
         }
@@ -704,6 +701,33 @@ import Testing
             #expect(UserData.fetchCoordinator.isCurrent(nextTicket))
             UserData.fetchCoordinator.finish(nextTicket)
         }
+    }
+
+    @Test func profileHydrationRetryRemainsScheduledUntilAttemptReturns() async {
+        let identity = SuperTokensSessionBridge.StableSessionIdentity(
+            sessionHandle: "retry-completion-ordering",
+            userId: "user-id",
+            tenantId: nil
+        )
+        let resultPublished = NativeVerificationGate()
+        let releaseAttempt = NativeVerificationGate()
+        let coordinator = ProfileHydrationRetryCoordinator(
+            delays: [0],
+            sleep: { _ in }
+        )
+
+        await coordinator.schedule(for: identity) { _ in
+            await resultPublished.open()
+            await releaseAttempt.wait()
+            return .stop
+        }
+
+        await resultPublished.wait()
+        // An attempt can publish its result before returning to the coordinator.
+        #expect(await coordinator.isScheduled(for: identity))
+        await releaseAttempt.open()
+        await coordinator.waitForCurrentTaskToFinish()
+        #expect(await !coordinator.isScheduled(for: identity))
     }
 
     @Test func duplicateReplacementProfileRetrySchedulingIsIdempotent() async {
