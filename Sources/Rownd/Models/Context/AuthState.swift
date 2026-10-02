@@ -69,6 +69,17 @@ extension AuthState: Codable {
         }
     }
 
+    var legacyMigrationToken: String? {
+        guard !Self.isSuperTokensAccessToken(accessToken) else { return nil }
+        // Native refresh credentials live in the SuperTokens store, never this legacy field.
+        if let refreshToken, !refreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard !Self.isSuperTokensAccessToken(refreshToken) else { return nil }
+            return refreshToken
+        }
+        if let accessToken, !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return accessToken }
+        return nil
+    }
+
     static func isSuperTokensAccessToken(_ accessToken: String?) -> Bool {
         guard let accessToken, let jwt = try? decode(jwt: accessToken) else { return false }
         return isSuperTokensAccessToken(jwt)
@@ -231,40 +242,6 @@ public enum UserType: String, Codable {
         let container = try decoder.singleValueContainer()
         let rawValue = try container.decode(String.self)
         self = UserType(rawValue: rawValue) ?? .Unknown
-    }
-}
-
-struct TokenRequest: Codable {
-    var refreshToken: String?
-    var idToken: String?
-    var appId: String?
-    var intent: RowndSignInIntent?
-    var intentMismatchBehavior: String?
-    var userData: [String: AnyCodable?]?
-    var instantUserId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case refreshToken = "refresh_token"
-        case idToken = "id_token"
-        case appId = "app_id"
-        case intentMismatchBehavior = "intent_mismatch_behavior"
-        case intent
-        case userData = "user_data"
-        case instantUserId = "instant_user_id"
-    }
-}
-
-struct TokenResponse: Codable {
-    var refreshToken: String?
-    var accessToken: String?
-    var userType: UserType?
-    var appVariantUserType: UserType?
-
-    enum CodingKeys: String, CodingKey {
-        case refreshToken = "refresh_token"
-        case accessToken = "access_token"
-        case userType = "user_type"
-        case appVariantUserType = "app_variant_user_type"
     }
 }
 

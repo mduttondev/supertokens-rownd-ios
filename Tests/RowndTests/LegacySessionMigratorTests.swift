@@ -4,6 +4,35 @@ import Testing
 @testable import Rownd
 
 @Suite(.serialized) struct LegacySessionMigratorTests {
+    @Test(arguments: [false, true], [nil, "", " \t\n\r"] as [String?])
+    func accessOnlyMigrationUsesAccessToken(expired: Bool, blankRefresh: String?) async throws {
+        try await withIsolatedStore {
+            let calls = MigrationCalls()
+            let accessToken = expired ? expiredLegacyToken() : validLegacyToken()
+            let auth = AuthState(accessToken: accessToken, refreshToken: blankRefresh)
+            await setAuthState(auth)
+            await LegacySessionMigrator.migrateIfNeeded(authState: auth, dependencies: makeDependencies(calls: calls))
+            #expect(calls.migrateAccessTokens == [accessToken])
+        }
+    }
+
+    @Test func nativeAccessAndEmptyCredentialsAreNotMigrated() async throws {
+        try await withIsolatedStore {
+            for auth in [AuthState(), AuthState(accessToken: "", refreshToken: ""),
+                         AuthState(accessToken: " \t\n", refreshToken: "\r\n "),
+                         AuthState(refreshToken: validSuperTokensToken()),
+                         AuthState(accessToken: validLegacyToken(), refreshToken: validSuperTokensToken()),
+                         AuthState(accessToken: validSuperTokensToken(), refreshToken: "cached-refresh")] {
+                let calls = MigrationCalls()
+                await setAuthState(auth)
+                await LegacySessionMigrator.migrateIfNeeded(authState: auth, dependencies: makeDependencies(calls: calls))
+                #expect(calls.migrateAccessTokens.isEmpty)
+                #expect(Context.currentContext.store.state.auth.accessToken == auth.accessToken)
+                #expect(Context.currentContext.store.state.auth.refreshToken == auth.refreshToken)
+            }
+        }
+    }
+
     @Test(arguments: [false, true]) func supersededFlightDoesNotBlockNewCredentials(signOutFirst: Bool) async throws {
         try await withIsolatedStore {
             let wasInitialized = Rownd.isSuperTokensInitialized
@@ -70,7 +99,7 @@ import Testing
                 ]
                 let client = LegacySessionMigrationClient(apiDomain: url.string, session: session)
                 do {
-                    let result = try await client.migrate(legacyAccessToken: "legacy")
+                    let result = try await client.migrate(legacyToken: "legacy")
                     #expect(missing == nil)
                     #expect(result == .migrated(SuperTokensSessionTokens(
                         accessToken: "access", refreshToken: "refresh", frontToken: "front", antiCSRF: nil
@@ -130,24 +159,24 @@ import Testing
         }
     }
 
-    @Test func refreshResponseCannotOverwriteNewerCredentials() async throws {
+    @Test func migrationResponseCannotOverwriteNewerCredentials() async throws {
         try await withIsolatedStore {
             let replacement = AuthState(accessToken: validLegacyToken(), refreshToken: "new-user-refresh")
             let calls = MigrationCalls()
             var dependencies = makeDependencies(calls: calls)
-            dependencies.client = LegacySessionMigrationClient(refreshLegacyTokenHandler: { _ in
+            dependencies.client = LegacySessionMigrationClient(migrateHandler: { token in
                 await setAuthState(replacement)
-                return TokenResponse(refreshToken: "stale-rotated-refresh", accessToken: validLegacyToken())
-            }, migrateHandler: { token in
                 calls.migrateAccessTokens.append(token)
-                throw RowndError("HTTP 500")
+                return .migrated(SuperTokensSessionTokens(
+                    accessToken: validSuperTokensToken(), refreshToken: "st-refresh", frontToken: "front", antiCSRF: nil
+                ))
             })
             let auth = AuthState(accessToken: expiredLegacyToken(), refreshToken: "old-refresh")
             await setAuthState(auth)
             await LegacySessionMigrator.migrateIfNeeded(authState: auth, dependencies: dependencies)
             #expect(Context.currentContext.store.state.auth.accessToken == replacement.accessToken)
             #expect(Context.currentContext.store.state.auth.refreshToken == replacement.refreshToken)
-            #expect(calls.migrateAccessTokens.isEmpty)
+            #expect(calls.migrateAccessTokens == ["old-refresh"])
         }
     }
 
@@ -186,7 +215,7 @@ import Testing
             var dependencies = makeDependencies(calls: calls)
             dependencies.client = LegacySessionMigrationClient(migrateHandler: { token in
                 calls.migrateAccessTokens.append(token)
-                return try await client.migrate(legacyAccessToken: token)
+                return try await client.migrate(legacyToken: token)
             })
             try await assertFailedMigrationLifecycle(dependencies: dependencies, calls: calls, expectedRequests: 1)
         }
@@ -236,11 +265,9 @@ import Testing
         #expect(calls.migrateAccessTokens.count == expectedRequests)
     }
 
-    @Test func boundedMigrationRetryUsesRotatedCredentialsAndSynchronizesSession() async throws {
+    @Test func boundedMigrationRetryUsesRefreshTokenAndSynchronizesSession() async throws {
         try await withIsolatedStore {
             let calls = MigrationCalls()
-            let rotated = validLegacyToken()
-            calls.refreshResult = TokenResponse(refreshToken: "rotated", accessToken: rotated)
             calls.migrateErrors = [URLError(.timedOut)]
             calls.migrateResults = [.migrated(SuperTokensSessionTokens(
                 accessToken: validSuperTokensToken(), refreshToken: "st-refresh", frontToken: "front", antiCSRF: nil
@@ -250,8 +277,7 @@ import Testing
             await setAuthState(auth)
             await LegacySessionMigrator.migrateIfNeeded(authState: auth, dependencies: dependencies)
             #expect(!Context.currentContext.store.state.auth.isLoading)
-            #expect(calls.refreshTokens == ["old"])
-            #expect(calls.migrateAccessTokens == [rotated, rotated])
+            #expect(calls.migrateAccessTokens == ["old", "old"])
             #expect(Context.currentContext.store.state.auth.isAuthenticated)
         }
     }
@@ -294,39 +320,7 @@ import Testing
         }
     }
 
-    @Test func refreshClientPreservesHTTPStatus() async throws {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [LegacyRefreshURLProtocol.self]
-        let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-        for status in [400, 401, 429, 503] {
-            let client = LegacySessionMigrationClient(legacyApiDomain: "https://refresh.example.com?status=\(status)", session: session)
-            do {
-                _ = try await client.refreshLegacyToken(refreshToken: "legacy-refresh")
-                Issue.record("Expected refresh HTTP error")
-            } catch let error as LegacyTokenRefreshHTTPError {
-                #expect(error.statusCode == status)
-            }
-        }
-    }
-
-    @Test func incompleteRefreshResponseSignsOut() async throws {
-        try await withIsolatedStore {
-            let calls = MigrationCalls()
-            calls.refreshResult = TokenResponse(refreshToken: nil, accessToken: nil,
-                                                userType: nil, appVariantUserType: nil)
-            var signOutCount = 0
-            var dependencies = makeDependencies(calls: calls)
-            dependencies.signOut = { _ in signOutCount += 1 }
-            let auth = AuthState(accessToken: expiredLegacyToken(), refreshToken: "legacy-refresh")
-            await setAuthState(auth)
-            await LegacySessionMigrator.migrateIfNeeded(authState: auth, dependencies: dependencies)
-            #expect(signOutCount == 1)
-            #expect(calls.migrateAccessTokens.isEmpty)
-        }
-    }
-
-    @Test func synchronizesWhenSuperTokensSessionAlreadyExists() async throws {
+    @Test(arguments: [false, true]) func synchronizesWhenSuperTokensSessionAlreadyExists(refreshOnly: Bool) async throws {
         try await withIsolatedStore {
             var didBootstrap = false
             var syncCount = 0
@@ -336,7 +330,7 @@ import Testing
             dependencies.bootstrapSession = { _, _ in didBootstrap = true; return true }
             dependencies.syncRowndAuthStateFromSuperTokens = { _ in syncCount += 1; return true }
 
-            let auth = AuthState(accessToken: validLegacyToken(), refreshToken: "legacy-refresh-token")
+            let auth = AuthState(accessToken: refreshOnly ? nil : validLegacyToken(), refreshToken: "legacy-refresh-token")
             await setAuthState(auth)
 
             await LegacySessionMigrator.migrateIfNeeded(
@@ -347,7 +341,6 @@ import Testing
             #expect(!didBootstrap)
             #expect(syncCount == 1)
             #expect(calls.migrateAccessTokens.isEmpty)
-            #expect(calls.refreshTokens.isEmpty)
         }
     }
 
@@ -377,8 +370,7 @@ import Testing
                 dependencies: dependencies
             )
 
-            #expect(calls.refreshTokens.isEmpty)
-            #expect(calls.migrateAccessTokens.count == 1)
+            #expect(calls.migrateAccessTokens == ["legacy-refresh-token"])
             #expect(bootstrappedTokens == SuperTokensSessionTokens(
                 accessToken: migratedAccessToken,
                 refreshToken: "st-refresh-token",
@@ -390,17 +382,10 @@ import Testing
         }
     }
 
-    @Test func expiredLegacySessionRefreshesThenMigrates() async throws {
+    @Test(arguments: [false, true]) func expiredOrMissingAccessMigratesWithRefreshToken(refreshOnly: Bool) async throws {
         try await withIsolatedStore {
-            let refreshedLegacyAccessToken = validLegacyToken()
             let migratedAccessToken = validLegacyToken()
             var calls = MigrationCalls()
-            calls.refreshResult = TokenResponse(
-                refreshToken: "new-legacy-refresh-token",
-                accessToken: refreshedLegacyAccessToken,
-                userType: nil,
-                appVariantUserType: nil
-            )
             calls.migrateResults = [.migrated(SuperTokensSessionTokens(
                 accessToken: migratedAccessToken,
                 refreshToken: "st-refresh-token",
@@ -412,15 +397,14 @@ import Testing
             var dependencies = makeDependencies(calls: calls)
             dependencies.bootstrapSession = { tokens, _ in bootstrappedTokens = tokens; return true }
 
-            await setAuthState(AuthState(accessToken: expiredLegacyToken(), refreshToken: "legacy-refresh-token"))
+            await setAuthState(AuthState(accessToken: refreshOnly ? nil : expiredLegacyToken(), refreshToken: "legacy-refresh-token"))
 
             await LegacySessionMigrator.migrateIfNeeded(
                 authState: Context.currentContext.store.state.auth,
                 dependencies: dependencies
             )
 
-            #expect(calls.refreshTokens == ["legacy-refresh-token"])
-            #expect(calls.migrateAccessTokens == [refreshedLegacyAccessToken])
+            #expect(calls.migrateAccessTokens == ["legacy-refresh-token"])
             #expect(bootstrappedTokens?.accessToken == migratedAccessToken)
             #expect(await currentRefreshToken() == nil)
         }
@@ -454,58 +438,12 @@ import Testing
         }
     }
 
-    @Test(arguments: [400, 401]) func invalidRefreshSignsOut(status: Int) async throws {
-        try await withIsolatedStore {
-            var calls = MigrationCalls()
-            calls.refreshError = LegacyTokenRefreshHTTPError(statusCode: status)
-
-            var signOutCount = 0
-            var dependencies = makeDependencies(calls: calls)
-            dependencies.signOut = { _ in signOutCount += 1 }
-
-            let auth = AuthState(accessToken: expiredLegacyToken(), refreshToken: "legacy-refresh-token")
-            await setAuthState(auth)
-
-            await LegacySessionMigrator.migrateIfNeeded(
-                authState: auth,
-                dependencies: dependencies
-            )
-
-            #expect(signOutCount == 1)
-            #expect(calls.refreshTokens == ["legacy-refresh-token"])
-            #expect(calls.migrateAccessTokens.isEmpty)
-        }
-    }
-
-    @Test func refreshFailuresSignOutBeforeMigration() async throws {
-        try await withIsolatedStore {
-            let errors: [Error] = [URLError(.notConnectedToInternet), URLError(.timedOut),
-                                   LegacyTokenRefreshHTTPError(statusCode: 429),
-                                   LegacyTokenRefreshHTTPError(statusCode: 503),
-                                   RowndError("invalid response")]
-            for error in errors {
-                let calls = MigrationCalls()
-                calls.refreshError = error
-                var signOutCount = 0
-                var dependencies = makeDependencies(calls: calls)
-                dependencies.signOut = { _ in signOutCount += 1 }
-                let auth = AuthState(accessToken: expiredLegacyToken(), refreshToken: "legacy-refresh-token")
-                await setAuthState(auth)
-
-                await LegacySessionMigrator.migrateIfNeeded(authState: auth, dependencies: dependencies)
-
-                #expect(signOutCount == 1)
-                #expect(calls.migrateAccessTokens.isEmpty)
-            }
-        }
-    }
-
-    @Test func failedRefreshClearsPersistedLegacySession() async throws {
+    @Test func failedRefreshOnlyMigrationClearsPersistedLegacySession() async throws {
         try await withIsolatedStore {
             let calls = MigrationCalls()
-            calls.refreshError = LegacyTokenRefreshHTTPError(statusCode: 500)
+            calls.migrateErrors = [RowndError("HTTP 500")]
             let dependencies = makeDependencies(calls: calls)
-            let auth = AuthState(accessToken: expiredLegacyToken(), refreshToken: "legacy-refresh")
+            let auth = AuthState(refreshToken: "legacy-refresh")
             await setAuthState(auth)
             await MainActor.run {
                 Context.currentContext.store.dispatch(SetUserData(data: ["user_id": "legacy-user"]))
@@ -522,12 +460,11 @@ import Testing
             #expect(reloaded.auth.accessToken == nil)
             #expect(reloaded.auth.refreshToken == nil)
             await LegacySessionMigrator.migrateIfNeeded(authState: reloaded.auth, dependencies: dependencies)
-            #expect(calls.refreshTokens == ["legacy-refresh"])
-            #expect(calls.migrateAccessTokens.isEmpty)
+            #expect(calls.migrateAccessTokens == ["legacy-refresh"])
         }
     }
 
-    @Test(arguments: [false, true]) func requestPreparationFailureRetainsRotatedCredentials(invalidDomain: Bool) async throws {
+    @Test(arguments: [false, true]) func requestPreparationFailureRetainsLegacyCredentials(invalidDomain: Bool) async throws {
         try await withIsolatedStore {
             let originalConfig = Rownd.config
             defer { Rownd.config = originalConfig }
@@ -541,12 +478,8 @@ import Testing
             defer { session.invalidateAndCancel() }
             let requestsBefore = LegacyRefreshURLProtocol.requestCount
             let calls = MigrationCalls()
-            let rotated = validLegacyToken()
             var dependencies = makeDependencies(calls: calls)
-            dependencies.client = LegacySessionMigrationClient(session: session, refreshLegacyTokenHandler: { token in
-                calls.refreshTokens.append(token)
-                return TokenResponse(refreshToken: "rotated-refresh", accessToken: rotated)
-            })
+            dependencies.client = LegacySessionMigrationClient(session: session)
             let auth = AuthState(accessToken: expiredLegacyToken(), refreshToken: "old-refresh")
             await MainActor.run {
                 setAuthState(auth)
@@ -554,38 +487,34 @@ import Testing
             }
             await LegacySessionMigrator.migrateIfNeeded(authState: auth, dependencies: dependencies)
             #expect(LegacyRefreshURLProtocol.requestCount == requestsBefore)
-            #expect(calls.refreshTokens == ["old-refresh"])
-            #expect(Context.currentContext.store.state.auth.accessToken == rotated)
-            #expect(Context.currentContext.store.state.auth.refreshToken == "rotated-refresh")
+            #expect(Context.currentContext.store.state.auth.accessToken == auth.accessToken)
+            #expect(Context.currentContext.store.state.auth.refreshToken == auth.refreshToken)
             #expect(!Context.currentContext.store.state.auth.isLoading)
             #expect(Context.currentContext.store.state.user.data["user_id"]?.value as? String == "legacy-user")
             let persisted = try #require(Storage.shared.get(forKey: "RowndState"))
             let state = try JSONDecoder().decode(RowndState.self, from: Data(persisted.utf8))
-            #expect(state.auth.accessToken == rotated)
-            #expect(state.auth.refreshToken == "rotated-refresh")
+            #expect(state.auth.accessToken == auth.accessToken)
+            #expect(state.auth.refreshToken == auth.refreshToken)
         }
     }
 
-    @Test func failedMigrationClearsItsPersistedRotatedCredentials() async throws {
+    @Test func failedMigrationClearsItsPersistedLegacyCredentials() async throws {
         try await withIsolatedStore {
             let calls = MigrationCalls()
-            let refreshedAccessToken = validLegacyToken()
-            calls.refreshResult = TokenResponse(refreshToken: "rotated-refresh", accessToken: refreshedAccessToken,
-                                                userType: nil, appVariantUserType: nil)
+            let auth = AuthState(accessToken: expiredLegacyToken(), refreshToken: "old-refresh")
             calls.migrateErrors = [URLError(.timedOut), URLError(.timedOut)]
             var dependencies = makeDependencies(calls: calls)
             let migrate = dependencies.client
             dependencies.client = LegacySessionMigrationClient(
-                refreshLegacyTokenHandler: { try await migrate.refreshLegacyToken(refreshToken: $0) },
                 migrateHandler: { token in
                     let persisted = try #require(Storage.shared.get(forKey: "RowndState"))
                     let state = try JSONDecoder().decode(RowndState.self, from: Data(persisted.utf8))
-                    #expect(state.auth.accessToken == refreshedAccessToken)
-                    #expect(state.auth.refreshToken == "rotated-refresh")
-                    return try await migrate.migrate(legacyAccessToken: token)
+                    #expect(state.auth.accessToken == auth.accessToken)
+                    #expect(state.auth.refreshToken == auth.refreshToken)
+                    return try await migrate.migrate(legacyToken: token)
                 }
             )
-            await setAuthState(AuthState(accessToken: expiredLegacyToken(), refreshToken: "old-refresh"))
+            await setAuthState(auth)
 
             await LegacySessionMigrator.migrateIfNeeded(authState: Context.currentContext.store.state.auth,
                                                        dependencies: dependencies)
@@ -594,8 +523,7 @@ import Testing
             #expect(await currentRefreshToken() == nil)
             await LegacySessionMigrator.migrateIfNeeded(authState: Context.currentContext.store.state.auth,
                                                        dependencies: dependencies)
-            #expect(calls.refreshTokens == ["old-refresh"])
-            #expect(calls.migrateAccessTokens == Array(repeating: refreshedAccessToken, count: 2))
+            #expect(calls.migrateAccessTokens == Array(repeating: "old-refresh", count: 2))
         }
     }
 
@@ -710,8 +638,7 @@ import Testing
                 dependencies: dependencies
             )
 
-            let legacyAccessToken = try #require(legacyAuthState.accessToken)
-            #expect(calls.migrateAccessTokens == [legacyAccessToken])
+            #expect(calls.migrateAccessTokens == ["legacy-refresh-token"])
             #expect(bootstrappedTokens?.accessToken == migratedAccessToken)
         }
     }
@@ -727,20 +654,8 @@ import Testing
                 await Rownd.signOutForMigrationFailure(attempt: attempt)
             },
             client: LegacySessionMigrationClient(
-                refreshLegacyTokenHandler: { refreshToken in
-                    calls.refreshTokens.append(refreshToken)
-                    if let refreshError = calls.refreshError {
-                        throw refreshError
-                    }
-                    return calls.refreshResult ?? TokenResponse(
-                        refreshToken: refreshToken,
-                        accessToken: validLegacyToken(),
-                        userType: nil,
-                        appVariantUserType: nil
-                    )
-                },
-                migrateHandler: { accessToken in
-                    calls.migrateAccessTokens.append(accessToken)
+                migrateHandler: { legacyToken in
+                    calls.migrateAccessTokens.append(legacyToken)
                     if !calls.migrateErrors.isEmpty {
                         throw calls.migrateErrors.removeFirst()
                     }
@@ -793,9 +708,6 @@ import Testing
 }
 
 private final class MigrationCalls: @unchecked Sendable {
-    var refreshTokens: [String] = []
-    var refreshResult: TokenResponse?
-    var refreshError: Error?
     var migrateAccessTokens: [String] = []
     var migrateResults: [LegacySessionMigrationResult] = []
     var migrateErrors: [Error] = []

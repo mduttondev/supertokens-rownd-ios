@@ -5,6 +5,56 @@ import Testing
 @testable import Rownd
 
 @Suite(.serialized) struct LegacyMigrationTransportTests {
+    @Test(arguments: ["valid", "expired", "missing", "empty", "access-only"])
+    func directMigrationSendsLegacyBearerAndCompleteHeaders(state: String) async throws {
+        try await withTransport { server, storage, interceptions in
+            var auth = Context.currentContext.store.state.auth
+            if state == "expired" {
+                auth.accessToken = generateJwt(expires: Date(timeIntervalSinceNow: -3600).timeIntervalSince1970)
+            } else if state == "missing" {
+                auth.accessToken = nil
+            } else if state == "empty" {
+                auth.accessToken = ""
+            } else if state == "access-only" {
+                auth.refreshToken = nil
+            }
+            let legacyToken = try #require(auth.refreshToken ?? auth.accessToken)
+            let initialAuth = auth
+            await MainActor.run { Context.currentContext.store.dispatch(SetAuthState(payload: initialAuth)) }
+            let task = Task { await LegacySessionMigrator.migrateIfNeeded(authState: initialAuth) }
+            let request = try await server.nextRequest()
+            let raw = request.raw.lowercased()
+            #expect(raw.hasPrefix("post /auth/plugin/rownd/migrate "))
+            #expect(raw.contains("authorization: bearer \(legacyToken.lowercased())\r\n"))
+            #expect(raw.contains("rid: session\r\n"))
+            #expect(raw.contains("fdi-version: 1.18\r\n"))
+            #expect(raw.contains("st-auth-mode: header\r\n"))
+            #expect(raw.contains("content-type: application/json\r\n"))
+            let headers = try sessionHeaders()
+            request.respond(headers: headers)
+            await task.value
+            #expect(storage.get("st-storage-item-st-access-token") == headers["st-access-token"])
+            #expect(Context.currentContext.store.state.auth.refreshToken == nil)
+            #expect(interceptions.count == 0)
+        }
+    }
+
+    @Test func nativeRefreshStorageIsNotUsedAsLegacyCredentials() async throws {
+        try await withTransport { _, storage, _ in
+            #expect(storage.set("st-storage-item-st-refresh-token", value: "native-refresh"))
+            let auth = AuthState()
+            await MainActor.run { Context.currentContext.store.dispatch(SetAuthState(payload: auth)) }
+            var dependencies = LegacySessionMigrationDependencies()
+            dependencies.doesSuperTokensSessionExist = { false }
+            dependencies.client = LegacySessionMigrationClient(migrateHandler: { _ in
+                Issue.record("Native refresh credentials must not be sent to migration")
+                return .sessionAlreadyExists
+            })
+            await LegacySessionMigrator.migrateIfNeeded(authState: auth, dependencies: dependencies)
+            #expect(storage.get("st-storage-item-st-refresh-token") == "native-refresh")
+        }
+    }
+
     @Test(arguments: [false, true]) func supersededMigrationCannotInstallIntoNewLegacyFlight(replaceAgain: Bool) async throws {
         let gate = MigrationInstallationGate()
         try await withTransport(installationGate: gate) { server, storage, _ in

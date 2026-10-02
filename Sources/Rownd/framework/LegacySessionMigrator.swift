@@ -1,9 +1,4 @@
 import Foundation
-import JWTDecode
-
-struct LegacyTokenRefreshHTTPError: Error {
-    let statusCode: Int
-}
 
 struct LegacyMigrationRequestPreparationError: Error {
     let underlyingError: Error
@@ -23,76 +18,29 @@ struct LegacySessionMigrationClient {
     }()
     private let apiDomainOverride: String?
     private let apiBasePathOverride: String?
-    private let legacyApiDomain: String
     private let session: URLSession
-    private let refreshLegacyTokenHandler: ((String) async throws -> TokenResponse)?
     private let migrateHandler: ((String) async throws -> LegacySessionMigrationResult)?
 
     init(
         apiDomain: String? = nil,
         apiBasePath: String? = nil,
-        legacyApiDomain: String = "https://api.rownd.io",
         session: URLSession? = nil,
-        refreshLegacyTokenHandler: ((String) async throws -> TokenResponse)? = nil,
         migrateHandler: ((String) async throws -> LegacySessionMigrationResult)? = nil
     ) {
         self.apiDomainOverride = apiDomain
         self.apiBasePathOverride = apiBasePath
-        self.legacyApiDomain = legacyApiDomain
         self.session = session ?? Self.isolatedSession
-        self.refreshLegacyTokenHandler = refreshLegacyTokenHandler
         self.migrateHandler = migrateHandler
     }
 
-    func refreshLegacyToken(refreshToken: String) async throws -> TokenResponse {
-        if let refreshLegacyTokenHandler {
-            return try await refreshLegacyTokenHandler(refreshToken)
-        }
-
-        guard var components = URLComponents(string: legacyApiDomain) else {
-            throw RowndError("Invalid legacy Rownd API domain")
-        }
-
-        components.path = "/hub/auth/token"
-        guard let url = components.url else {
-            throw RowndError("Invalid legacy Rownd token refresh URL")
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(
-            TokenRequest(
-                refreshToken: refreshToken,
-                idToken: nil,
-                appId: nil,
-                intent: nil,
-                intentMismatchBehavior: nil,
-                userData: nil,
-                instantUserId: nil
-            )
-        )
-
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw RowndError("Legacy Rownd token refresh returned a non-HTTP response")
-        }
-
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw LegacyTokenRefreshHTTPError(statusCode: httpResponse.statusCode)
-        }
-
-        return try JSONDecoder().decode(TokenResponse.self, from: data)
-    }
-
-    func migrate(legacyAccessToken: String) async throws -> LegacySessionMigrationResult {
+    func migrate(legacyToken: String) async throws -> LegacySessionMigrationResult {
         if let migrateHandler {
-            return try await migrateHandler(legacyAccessToken)
+            return try await migrateHandler(legacyToken)
         }
 
         let request: URLRequest
         do {
-            request = try migrationRequest(legacyAccessToken: legacyAccessToken)
+            request = try migrationRequest(legacyToken: legacyToken)
         } catch {
             throw LegacyMigrationRequestPreparationError(underlyingError: error)
         }
@@ -129,7 +77,7 @@ struct LegacySessionMigrationClient {
         }
     }
 
-    private func migrationRequest(legacyAccessToken: String) throws -> URLRequest {
+    private func migrationRequest(legacyToken: String) throws -> URLRequest {
         let supertokens = try Rownd.requireSuperTokensConfig()
         let apiDomain = apiDomainOverride ?? supertokens.apiDomain
         let apiBasePath = apiBasePathOverride ?? supertokens.apiBasePath
@@ -144,7 +92,7 @@ struct LegacySessionMigrationClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(legacyAccessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(legacyToken)", forHTTPHeaderField: "Authorization")
         request.setValue("session", forHTTPHeaderField: "rid")
         request.setValue("1.18", forHTTPHeaderField: "fdi-version")
         request.setValue("header", forHTTPHeaderField: "st-auth-mode")
@@ -191,50 +139,18 @@ enum LegacySessionMigrator {
     }
 
     private static func performMigrationIfNeeded(
-        attempt initialAttempt: LegacyMigrationAttempt,
+        attempt: LegacyMigrationAttempt,
         dependencies: LegacySessionMigrationDependencies
     ) async {
-        var attempt = initialAttempt
         guard await attempt.isCurrent, !Task.isCancelled else { return }
         if await syncExistingSession(dependencies, attempt: attempt) { return }
-        guard let accessToken = attempt.auth.accessToken, !accessToken.isEmpty,
-              !isSuperTokensAccessToken(accessToken) else { return }
+        guard let legacyToken = attempt.auth.legacyMigrationToken else { return }
 
         guard await updateAttempt(attempt, update: { $0.isLoading = true }) else { return }
 
-        if !isAccessTokenValid(accessToken) {
-            guard let refreshToken = attempt.auth.refreshToken, !refreshToken.isEmpty else {
-                await finishInvalidSession(attempt, dependencies: dependencies)
-                return
-            }
-
-            do {
-                let refreshed = try await dependencies.client.refreshLegacyToken(refreshToken: refreshToken)
-                guard let refreshedAccessToken = refreshed.accessToken, !refreshedAccessToken.isEmpty else {
-                    throw RowndError("Legacy refresh response did not include an access token")
-                }
-                guard await attempt.isCurrent, !Task.isCancelled else { return }
-                if await syncExistingSession(dependencies, attempt: attempt) { return }
-                let refreshedRefreshToken = refreshed.refreshToken ?? attempt.auth.refreshToken
-                let didUpdate = await updateAttempt(attempt) {
-                    $0.accessToken = refreshedAccessToken
-                    $0.refreshToken = refreshedRefreshToken
-                }
-                guard didUpdate else { return }
-                let previousAttempt = attempt
-                attempt.auth.accessToken = refreshedAccessToken
-                attempt.auth.refreshToken = refreshedRefreshToken
-                await coordinator.updateKey(from: previousAttempt, to: attempt)
-            } catch {
-                logger.warning("Failed to refresh legacy Rownd session before migration: \(String(describing: error))")
-                await finishInvalidSession(attempt, dependencies: dependencies)
-                return
-            }
-        }
-
         do {
             let result = try await migrateWithRetry(
-                legacyAccessToken: attempt.auth.accessToken!, client: dependencies.client,
+                legacyToken: legacyToken, client: dependencies.client,
                 shouldRetry: { [attempt] in await attempt.isCurrent }
             )
             guard await attempt.isCurrent, !Task.isCancelled else { return }
@@ -321,45 +237,26 @@ enum LegacySessionMigrator {
     }
 
     private static func migrateWithRetry(
-        legacyAccessToken: String,
+        legacyToken: String,
         client: LegacySessionMigrationClient,
         shouldRetry: () async -> Bool
     ) async throws -> LegacySessionMigrationResult {
         guard !Task.isCancelled, await shouldRetry() else { throw CancellationError() }
         do {
-            return try await client.migrate(legacyAccessToken: legacyAccessToken)
+            return try await client.migrate(legacyToken: legacyToken)
         } catch {
             guard error is URLError, !Task.isCancelled, await shouldRetry() else {
                 throw error
             }
-            return try await client.migrate(legacyAccessToken: legacyAccessToken)
+            return try await client.migrate(legacyToken: legacyToken)
         }
-    }
-
-    private static func isAccessTokenValid(_ accessToken: String) -> Bool {
-        guard let jwt = try? decode(jwt: accessToken), let expiresAt = jwt.expiresAt else {
-            return false
-        }
-
-        guard let currentDateWithMargin = Calendar.current.date(byAdding: .second, value: 60, to: Date()) else {
-            return false
-        }
-
-        return currentDateWithMargin < expiresAt
-    }
-
-    private static func isSuperTokensAccessToken(_ accessToken: String) -> Bool {
-        guard let jwt = try? decode(jwt: accessToken) else { return false }
-
-        return jwt.claim(name: "sessionHandle").string != nil
-            || jwt.claim(name: "tId").string != nil
     }
 }
 
 @MainActor private final class LegacySessionMigrationCoordinator {
     private final class Flight {
         let id = UUID()
-        var key: LegacyMigrationAttempt
+        let key: LegacyMigrationAttempt
         var task: Task<Void, Never>?
         var adoptionCleanup: Task<Void, Never>?
         var waiters: [CheckedContinuation<Void, Never>] = []
@@ -391,11 +288,6 @@ enum LegacySessionMigrator {
             }
         }
         await withCheckedContinuation { flight?.waiters.append($0) }
-    }
-
-    func updateKey(from old: LegacyMigrationAttempt, to new: LegacyMigrationAttempt) {
-        guard flight?.key == old, new.isCurrent else { return }
-        flight?.key = new
     }
 
     private func retire() -> Flight? {

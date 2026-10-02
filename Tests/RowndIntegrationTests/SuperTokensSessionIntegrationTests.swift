@@ -220,11 +220,11 @@ import AnyCodable
         #expect(counters["legacyRefresh"] as? Int == 0)
     }
 
-    @Test func expiredLegacySessionRefreshesThenMigratesThroughHarness() async throws {
+    @Test(arguments: [false, true]) func expiredOrMissingLegacyAccessMigratesDirectlyThroughHarness(refreshOnly: Bool) async throws {
         try await TestInfrastructure.prepare()
 
         try await migrateLegacySession(
-            accessToken: generateJwt(expires: Date(timeIntervalSinceNow: -3600).timeIntervalSince1970),
+            accessToken: refreshOnly ? nil : generateJwt(expires: Date(timeIntervalSinceNow: -3600).timeIntervalSince1970),
             refreshToken: "legacy-refresh-token"
         )
 
@@ -232,10 +232,13 @@ import AnyCodable
 
         let counters = try await getJSON(path: "counters")
         #expect(counters["migrate"] as? Int == 1)
-        #expect(counters["legacyRefresh"] as? Int == 1)
+        #expect(counters["legacyRefresh"] as? Int == 0)
+        let capturedRequests = try await getJSON(path: "captured-requests")
+        let migrateRequest = try #require(capturedRequests["migrate"] as? [String: Any])
+        #expect(migrateRequest["authorization"] as? String == "Bearer legacy-refresh-token")
     }
 
-    @Test func legacyRefreshFailureSignsOutAndDoesNotCallMigrate() async throws {
+    @Test func unavailableLegacyRefreshEndpointDoesNotPreventMigration() async throws {
         try await TestInfrastructure.prepare()
         try await setMigrationMode("legacyRefreshFailure")
 
@@ -244,14 +247,14 @@ import AnyCodable
             refreshToken: "legacy-refresh-token"
         )
 
-        #expect(await !SuperTokensSessionBridge.doesSessionExist())
-        #expect(await SuperTokensSessionBridge.getAccessToken() == nil)
-        #expect(await currentAuthAccessToken() == nil)
+        #expect(await SuperTokensSessionBridge.doesSessionExist())
+        #expect(await SuperTokensSessionBridge.getAccessToken() != nil)
+        #expect(await currentAuthAccessToken() != nil)
         #expect(await currentAuthRefreshToken() == nil)
 
         let counters = try await getJSON(path: "counters")
-        #expect(counters["legacyRefresh"] as? Int == 1)
-        #expect(counters["migrate"] as? Int == 0)
+        #expect(counters["legacyRefresh"] as? Int == 0)
+        #expect(counters["migrate"] as? Int == 1)
     }
 
     @Test func migrateUnauthorizedSignsOutLocalLegacySession() async throws {
@@ -287,7 +290,7 @@ import AnyCodable
         let result = try await LegacySessionMigrationClient(
             apiDomain: TestInfrastructure.supertokensConfig.apiDomain,
             apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath
-        ).migrate(legacyAccessToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970))
+        ).migrate(legacyToken: generateJwt(expires: Date(timeIntervalSinceNow: 3600).timeIntervalSince1970))
 
         #expect(result == .sessionAlreadyExists)
 
@@ -752,7 +755,7 @@ import AnyCodable
         return user
     }
 
-    private func migrateLegacySession(accessToken: String, refreshToken: String) async throws {
+    private func migrateLegacySession(accessToken: String?, refreshToken: String) async throws {
         await MainActor.run {
             Context.currentContext.store.dispatch(
                 SetAuthState(payload: AuthState(accessToken: accessToken, refreshToken: refreshToken))
@@ -764,8 +767,7 @@ import AnyCodable
             dependencies: LegacySessionMigrationDependencies(
                 client: LegacySessionMigrationClient(
                     apiDomain: TestInfrastructure.supertokensConfig.apiDomain,
-                    apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath,
-                    legacyApiDomain: TestInfrastructure.supertokensConfig.apiDomain
+                    apiBasePath: TestInfrastructure.supertokensConfig.apiBasePath
                 )
             )
         )
