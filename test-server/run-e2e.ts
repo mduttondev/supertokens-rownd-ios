@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { delay, stopChild } from './process';
 import { backendStartupTimeoutMs, logDockerDiagnostics } from './startup';
+import { collectResourceDiagnostics } from './resource-diagnostics';
 
 const harnessPort = Number(process.env.IOS_HARNESS_PORT || 3100);
 const apiUrl = `http://127.0.0.1:${harnessPort}`;
@@ -175,6 +176,7 @@ async function main() {
 
     await Promise.all([waitForHealth(`${apiUrl}/health`, startupTimeoutMs), waitForHealth(hubHealthUrl)]);
     backendReady = true;
+    if (process.env.IOS_E2E_DIAGNOSTICS_DIR) await collectResourceDiagnostics('ready');
     if (process.env.IOS_E2E_ONLY_UI !== '1') {
       await run('npm', ['run', 'test:integration']);
       assertResourcesRunning();
@@ -186,6 +188,7 @@ async function main() {
   } catch (error) {
     failure = error;
     console.error('iOS E2E failure before cleanup', error);
+    if (process.env.IOS_E2E_DIAGNOSTICS_DIR) await collectResourceDiagnostics('failure');
     if (harnessProcess && !backendReady) {
       await logDockerDiagnostics();
     }

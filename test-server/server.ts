@@ -8,6 +8,8 @@ import { errorHandler, middleware } from 'supertokens-node/framework/express';
 import AccountLinking from 'supertokens-node/recipe/accountlinking';
 import EmailVerification from 'supertokens-node/recipe/emailverification';
 import Multitenancy from 'supertokens-node/recipe/multitenancy';
+import { SerialTaskQueue } from './serial-task-queue';
+import { requestDiagnostics, snapshotPendingRequests, startRequestDiagnostics } from './request-diagnostics';
 import Passwordless from 'supertokens-node/recipe/passwordless';
 import Session from 'supertokens-node/recipe/session';
 import { verifySession } from 'supertokens-node/recipe/session/framework/express';
@@ -425,8 +427,10 @@ function capturePluginRequest(name: string, req: express.Request, res: express.R
       typeof req.query.rowndPendingVerificationId === 'string' ? req.query.rowndPendingVerificationId : undefined,
   };
   capturedRequests[name] = capturedRequest;
+  requestDiagnostics(res)?.captured(false);
   res.on('finish', () => {
     if (capturedRequests[name] !== capturedRequest) {
+      requestDiagnostics(res)?.captured(true, false);
       return;
     }
     capturedRequests[name] = {
@@ -438,6 +442,7 @@ function capturePluginRequest(name: string, req: express.Request, res: express.R
       },
       statusCode: res.statusCode,
     };
+    requestDiagnostics(res)?.captured(true);
   });
 }
 
@@ -578,6 +583,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
   }
 
   const app = express();
+  const sessionFixtureQueue = new SerialTaskQueue();
   logStage('Core configuration complete; starting harness HTTP server');
 
   const started = await new Promise<{ server: Server; port: number }>((resolve, reject) => {
@@ -753,6 +759,17 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       credentials: true,
     }),
   );
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && req.path === '/test/expiring-session') {
+      startRequestDiagnostics(req, res, '/test/expiring-session');
+    } else if (req.method === 'PUT' && (
+      req.path === '/auth/plugin/rownd/user' || req.path === '/auth/plugin/rownd/user/field' ||
+      req.path === '/auth/plugin/rownd/user/meta'
+    )) {
+      startRequestDiagnostics(req, res, req.path);
+    }
+    next();
+  });
   app.use(express.json());
   app.use((req, res, next) => {
     if (req.method === 'POST' && req.path === '/auth/signinup/code') {
@@ -1121,8 +1138,10 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     });
   });
 
-  app.post('/reset', (_req, res) => {
-    resetCounters();
+  app.post('/reset', async (_req, res) => {
+    snapshotPendingRequests();
+    // A disconnected fixture request still has to restore Core's tenant configuration.
+    await sessionFixtureQueue.run(resetCounters);
     res.json({ status: 'OK' });
   });
 
@@ -1273,24 +1292,30 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
       res.status(400).json({ status: 'ERROR', message: 'accessTokenValidity must be 5, 30, or 90 seconds' });
       return;
     }
-    await Multitenancy.createOrUpdateTenant(tenantId, {
-      coreConfig: { access_token_validity: accessTokenValidity, refresh_token_validity: 144000 },
+    // Client timeouts do not cancel Express handlers. Keep the configuration change,
+    // token issuance, and restoration atomic even when the next test has started.
+    const trace = requestDiagnostics(res)!;
+    const leaveQueue = trace.startPhase('queue');
+    const fixture = await sessionFixtureQueue.run(async () => {
+      leaveQueue();
+      try {
+        await trace.phase('config', () => Multitenancy.createOrUpdateTenant(tenantId, {
+          coreConfig: { access_token_validity: accessTokenValidity, refresh_token_validity: 144000 },
+        }));
+        const user = await trace.phase('user', () => Passwordless.signInUp({
+          email: `ios-expiry-${randomUUID()}@example.com`,
+          tenantId,
+        }));
+        const session = await trace.phase('session', () => Session.createNewSession(req, res, tenantId, user.recipeUserId));
+        counters.createSession += 1;
+        const info = await trace.phase('session-info', () => Session.getSessionInformation(session.getHandle()));
+        return { status: 'OK', userId: user.user.id, sessionHandle: session.getHandle(), info };
+      } finally {
+        await trace.phase('restore', () => Multitenancy.createOrUpdateTenant(tenantId, {
+          coreConfig: { access_token_validity: 3600, refresh_token_validity: 144000 },
+        }));
+      }
     });
-    let fixture;
-    try {
-      const user = await Passwordless.signInUp({
-        email: `ios-expiry-${randomUUID()}@example.com`,
-        tenantId,
-      });
-      const session = await Session.createNewSession(req, res, tenantId, user.recipeUserId);
-      counters.createSession += 1;
-      const info = await Session.getSessionInformation(session.getHandle());
-      fixture = { status: 'OK', userId: user.user.id, sessionHandle: session.getHandle(), info };
-    } finally {
-      await Multitenancy.createOrUpdateTenant(tenantId, {
-        coreConfig: { access_token_validity: 3600, refresh_token_validity: 144000 },
-      });
-    }
     res.json(fixture);
   });
 
