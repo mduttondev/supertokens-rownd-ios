@@ -76,7 +76,6 @@ jobs:
       # Cold pulls took ~400s; allow 180s for readiness within the 600s backend budget.
       IOS_E2E_CONTAINER_STARTUP_TIMEOUT_MS: '180000'
       DEBUG: testcontainers,testcontainers:pull
-      IOS_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/ios-e2e-diagnostics
     steps:
       - name: Checkout iOS SDK
         uses: actions/checkout@v4
@@ -127,6 +126,7 @@ jobs:
 
       - name: Run E2E tests
         env:
+          IOS_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/ios-e2e-diagnostics
           IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
         run: |
           node --import tsx --test test-server/diagnostics.test.ts test-server/serial-task-queue.test.ts test-server/startup.test.ts
@@ -136,6 +136,8 @@ jobs:
         if: failure()
         continue-on-error: true
         timeout-minutes: 1
+        env:
+          IOS_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/ios-e2e-diagnostics
         run: node --import tsx test-server/resource-diagnostics.ts
 
       - name: Retain bounded E2E diagnostics
