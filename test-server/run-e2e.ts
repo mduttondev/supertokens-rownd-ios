@@ -209,17 +209,23 @@ async function main() {
 }
 
 process.once('SIGINT', () => {
-  void shutdown().then(
+  void stopAfterSignal().then(
     () => process.exit(130),
     () => process.exit(1),
   );
 });
 process.once('SIGTERM', () => {
-  void shutdown().then(
+  void stopAfterSignal().then(
     () => process.exit(143),
     () => process.exit(1),
   );
 });
+
+async function stopAfterSignal() {
+  // Step timeouts signal the runner before normal error handling can sample the VM.
+  if (process.env.IOS_E2E_DIAGNOSTICS_DIR) await collectResourceDiagnostics('failure');
+  await shutdown();
+}
 
 void main().catch((error) => {
   console.error('iOS E2E run failed', error);

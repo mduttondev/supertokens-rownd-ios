@@ -1,8 +1,9 @@
 # E2E failure diagnostics
 
-Release E2E jobs upload `ios-e2e-diagnostics-<run>-<attempt>` on failure (7-day retention).
+Release E2E jobs upload `ios-e2e-diagnostics-<run>-<attempt>` on failure or cancellation (7-day retention).
 The runner writes snapshots before testing and **before failure cleanup**, while Core/Postgres
-are still running. A workflow fallback also samples resources after a failed step.
+are still running, including on SIGINT/SIGTERM. A workflow fallback also samples resources
+after a failed or cancelled step. Abrupt runner termination can still prevent uploads.
 
 To enable locally:
 
@@ -44,14 +45,44 @@ artifacts. This avoids introducing a pipe-drain dependency on surviving descenda
 
 Compare `ready` and pre-cleanup `failure` resource snapshots for swap, VM pressure,
 guest pressure, and container CPU/memory. These are snapshots, not proof that no
-transient pressure occurred between samples. No resource allocations or timeouts
-were changed by this instrumentation.
+transient pressure occurred between samples.
 
 The Docker setup action v1.1.0 reads host `hw.ncpu` and `hw.memsize` and passes both
 directly to Colima. In run 36980665092, the resulting arguments were `--cpu 4 --memory 14`
 (log line 829): the host had 4 CPUs/14 GiB and the VM received all of both, not 14 GiB
 out of a 16-GiB host. This establishes no configured RAM reserve, not measured swapping.
 Source: https://github.com/douglascamata/setup-docker-macos-action/blob/v1.1.0/action.yml
+
+## Infrastructure correction after run 37029409758
+
+The job hit its 60-minute hard deadline. Docker setup consumed 19m04s: Homebrew
+update took ~83s, the Docker/Compose/Buildx install ~12m12s (including building Go
+and Docker from source), and Colima startup ~5m25s. The action has extra Colima
+options, but no input to skip Homebrew or install only a binary Docker client.
+
+Both Docker-backed workflows now use `.github/scripts/setup-docker-macos.sh`:
+checksum-pinned Lima 1.2.1, Colima 0.9.1, and Docker CLI 28.3.3 binaries, without
+Homebrew, Compose, or Buildx. Colima uses 2 CPUs/4 GiB instead of 4 CPUs/14 GiB.
+This limits guest contention; it does not dedicate or reserve physical host CPUs.
+At readiness, the old guest used 851 MiB with 13,123 MiB available and no swap;
+host load was 15.62 on four CPUs. These samples support reducing contention,
+**not** a diagnosis of OOM. The smaller VM may slow cold pulls/Core startup;
+compare startup times and existing resource snapshots on the next CI run.
+
+Release E2E has a 50-minute step limit inside a 75-minute job (previously an
+unbounded step inside 60 minutes). Setup has individual limits; the target is
+20 minutes or less, leaving cancellation/diagnostic headroom. This raises the
+worst-case billed job ceiling by 15 minutes, but removes the measured source-build
+overhead. Safari still runs, now with `IOS_E2E_ONLY_UI=1` so integration and example
+tests are not repeated. No test or HTTP request timeout was relaxed.
+
+The integration suite recorded one issue across 22 tests: the `waitForExpiry=true`
+refresh-outage fixture timed out before the job cancellation. Its configuration
+phase took 89.631s; its queue wait was only 1ms. Restoration later failed with
+`No SuperTokens core available to query`. A subsequent fixture succeeded, so
+this is not evidence of a permanently dead Core. The infrastructure changes
+mitigate the observed slow environment; resolving that failure still requires
+a CI rerun. Example/UI/Safari coverage was not reached in this failed run.
 
 Checks:
 

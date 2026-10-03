@@ -70,7 +70,8 @@ jobs:
     name: E2E
     if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_dispatch' || !inputs.skip_e2e)
     runs-on: macos-15-intel
-    timeout-minutes: 60
+    # Keep the E2E step deadline below the job deadline so diagnostics can run.
+    timeout-minutes: 75
     env:
       IOS_E2E_BACKEND_STARTUP_TIMEOUT_MS: '600000'
       # Cold pulls took ~400s; allow 180s for readiness within the 600s backend budget.
@@ -103,37 +104,32 @@ jobs:
           cache: npm
 
       - name: Set up Docker
-        uses: douglascamata/setup-docker-macos-action@v1.1.0
-        with:
-          lima: v1.2.1
-          colima: v0.9.1
-
-      - name: Connect Testcontainers to Colima
-        run: |
-          docker_host="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
-          docker --host "$docker_host" info
-          echo "DOCKER_HOST=$docker_host" >> "$GITHUB_ENV"
-          echo "TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock" >> "$GITHUB_ENV"
+        timeout-minutes: 10
+        run: bash .github/scripts/setup-docker-macos.sh
 
       - name: Install iOS SDK dependencies
+        timeout-minutes: 3
         run: npm ci
 
       - name: Install Hub dependencies
+        timeout-minutes: 4
         run: npm ci --prefix supertokens-rownd-hub
 
       - name: Resolve Swift dependencies
+        timeout-minutes: 3
         run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
 
       - name: Run E2E tests
+        timeout-minutes: 50
         env:
           IOS_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/ios-e2e-diagnostics
           IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
         run: |
           node --import tsx --test test-server/diagnostics.test.ts test-server/serial-task-queue.test.ts test-server/startup.test.ts
-          npm run test:e2e && IOS_E2E_UI_SCRIPT=test:e2e:safari-handoff npm run test:e2e
+          npm run test:e2e && IOS_E2E_ONLY_UI=1 IOS_E2E_UI_SCRIPT=test:e2e:safari-handoff npm run test:e2e
 
       - name: Collect E2E failure resources
-        if: failure()
+        if: ${{ !success() }}
         continue-on-error: true
         timeout-minutes: 1
         env:
@@ -141,7 +137,8 @@ jobs:
         run: node --import tsx test-server/resource-diagnostics.ts
 
       - name: Retain bounded E2E diagnostics
-        if: failure()
+        if: ${{ !success() }}
+        timeout-minutes: 2
         uses: actions/upload-artifact@v4
         with:
           name: ios-e2e-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
