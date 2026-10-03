@@ -351,9 +351,14 @@ final class RowndExampleTests: XCTestCase {
                 hubRequestID: requestID
             )
         }
-        let didReachCompletionDelay = await gateReached.waitUntilOpen()
+        // This gate includes app config, Apple sign-in HTTP, and the Hub update, not just UIKit presentation.
+        let completionTimeoutNanoseconds: UInt64 = 15_000_000_000
+        let didReachCompletionDelay = await gateReached.waitUntilOpen(timeoutNanoseconds: completionTimeoutNanoseconds)
         let completionIsBlocked = await MainActor.run { recorder.events.isEmpty && Rownd.isDisplayingHub() }
-        XCTAssertTrue(didReachCompletionDelay)
+        XCTAssertTrue(
+            didReachCompletionDelay,
+            "Apple sign-in did not reach the completion-delay gate within \(completionTimeoutNanoseconds / 1_000_000_000)s; check app config, Apple sign-in HTTP, and Hub update logs."
+        )
         XCTAssertTrue(completionIsBlocked)
         await whileCompletionVisible?()
         await releaseCompletion.open()
@@ -601,7 +606,7 @@ private actor PostAppleGate {
         pending.forEach { $0.resume() }
     }
 
-    func waitUntilOpen(timeoutNanoseconds: UInt64 = 3_000_000_000) async -> Bool {
+    func waitUntilOpen(timeoutNanoseconds: UInt64) async -> Bool {
         let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
         while !isOpen && DispatchTime.now().uptimeNanoseconds < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
