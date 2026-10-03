@@ -124,7 +124,7 @@ jobs:
         run: npm ci --prefix supertokens-rownd-hub
 
       - name: Resolve Swift dependencies
-        timeout-minutes: 3
+        timeout-minutes: 10
         run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
 
       - name: Prepare iOS simulator
