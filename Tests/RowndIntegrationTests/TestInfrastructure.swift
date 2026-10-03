@@ -19,6 +19,7 @@ struct TestInfrastructure {
     static func prepare() async throws {
         try await waitForBackend()
         try await waitForHub()
+        try await drainProfileOperations()
         try await resetBackend()
 
         Rownd.config.supertokens = supertokensConfig
@@ -75,7 +76,29 @@ struct TestInfrastructure {
 
         let (_, response) = try await URLSession.shared.data(for: request)
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
-        #expect(statusCode == 200)
+        try #require(statusCode == 200)
+    }
+
+    static func drainProfileOperations() async throws {
+        var request = URLRequest(url: backendURL.appendingPathComponent("test/drain-profile-operations"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        let (_, response) = try await URLSession.shared.data(for: request)
+        try #require((response as? HTTPURLResponse)?.statusCode == 200)
+        // The backend can finish before the SDK applies the response to its shared store.
+        // Also wait here after a failed test, before clearing counters or session storage.
+        try await waitForUserLoadingToFinish()
+    }
+
+    static func waitForUserLoadingToFinish() async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 15
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if await MainActor.run(body: { !Context.currentContext.store.state.user.isLoading }) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        throw RowndError("Timed out draining SDK profile operations; user.isLoading remains true; reset refused")
     }
 
 }

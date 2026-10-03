@@ -39,9 +39,16 @@ artifacts. This avoids introducing a pipe-drain dependency on surviving descenda
   means plugin capture middleware has not run; `pending` means it has run but its
   response has not finished. `completed` matches the captured status the Swift helper
   waits for. `superseded` means another request or reset replaced that capture entry.
-  A 2-second pending event and reset snapshots expose operations still in flight when
-  the helper's short polling budget runs out. If no PUT arrival exists, investigate
-  SDK dispatch/transport rather than a slow plugin response.
+   A 2-second pending event and reset snapshots expose operations still in flight when
+   the helper's 15-second monotonic polling budget runs out. If no PUT arrival exists, investigate
+   SDK dispatch/transport rather than a slow plugin response.
+
+Integration preparation releases harness holds and drains profile handlers, then waits
+for SDK profile loading to finish before resetting shared state. `/reset` also drains
+handlers, including disconnected requests, and refuses to clear captures if they remain
+pending after 15 seconds. This protects tracked operations from being reset underneath
+their completion; it does not block unrelated requests arriving later. A stuck operation
+fails subsequent preparation explicitly.
 
 Compare `ready` and pre-cleanup `failure` resource snapshots for swap, VM pressure,
 guest pressure, and container CPU/memory. These are snapshots, not proof that no

@@ -80,7 +80,7 @@ jobs:
         run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
 
       - name: Prepare iOS simulator
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: bash .github/scripts/setup-ios-simulator.sh
 
       - name: Run stale-authentication ordering test

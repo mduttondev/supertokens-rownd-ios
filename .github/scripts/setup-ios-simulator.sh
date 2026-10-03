@@ -41,5 +41,5 @@ if [[ -z "$udid" ]]; then
 fi
 
 echo "Using iPhone 17: $udid ($runtime_id, SDK $sdk_version)"
-xcrun simctl bootstatus "$udid" -b
+python3 "$(dirname "$0")/boot-ios-simulator.py" "$udid"
 printf 'IOS_SIMULATOR_UDID=%s\nIOS_SIMULATOR_DESTINATION=platform=iOS Simulator,id=%s\n' "$udid" "$udid" >> "$GITHUB_ENV"

@@ -785,77 +785,54 @@ import AnyCodable
     }
 
     private func waitForCounter(_ name: String, expectedValue: Int) async throws {
-        for _ in 0..<40 {
-            let counters = try await getJSON(path: "counters")
-            if counters[name] as? Int == expectedValue {
-                return
-            }
-
-            try await Task.sleep(nanoseconds: 25_000_000)
+        let counters = try await waitForJSON(path: "counters", description: "counter \(name) == \(expectedValue)") {
+            $0[name] as? Int == expectedValue
         }
-
-        let counters = try await getJSON(path: "counters")
         #expect(counters[name] as? Int == expectedValue)
     }
 
     private func waitForEmailUpdateRequest() async throws -> [String: Any] {
-        for _ in 0..<80 {
-            let capturedRequests = try await getJSON(path: "captured-requests")
-            if let request = capturedRequests["userFieldUpdate"] as? [String: Any],
-               request["statusCode"] is Int {
-                return request
-            }
-            if let request = capturedRequests["userUpdate"] as? [String: Any],
-               request["statusCode"] is Int {
-                return request
-            }
-
-            try await Task.sleep(nanoseconds: 25_000_000)
-        }
-
-        throw RowndError("Timed out waiting for the email update request")
+        try await waitForCapturedRequest(names: ["userFieldUpdate", "userUpdate"])
     }
 
     private func waitForCapturedRequest(named name: String) async throws -> [String: Any] {
-        for _ in 0..<80 {
-            let capturedRequests = try await getJSON(path: "captured-requests")
-            if let request = capturedRequests[name] as? [String: Any],
-               request["statusCode"] is Int {
-                return request
-            }
+        try await waitForCapturedRequest(names: [name])
+    }
 
-            try await Task.sleep(nanoseconds: 25_000_000)
+    private func waitForCapturedRequest(names: [String]) async throws -> [String: Any] {
+        let captured = try await waitForJSON(path: "captured-requests", description: "completed request \(names)") {
+            capture in names.contains { (capture[$0] as? [String: Any])?["statusCode"] is Int }
         }
-
-        throw RowndError("Timed out waiting for the \(name) request")
+        return try #require(names.compactMap { captured[$0] as? [String: Any] }.first { $0["statusCode"] is Int })
     }
 
     private func waitForUserLoadingToFinish() async throws {
-        for _ in 0..<80 {
-            let isLoading = await MainActor.run {
-                Context.currentContext.store.state.user.isLoading
-            }
-            if !isLoading {
-                return
-            }
-
-            try await Task.sleep(nanoseconds: 25_000_000)
-        }
-
-        throw RowndError("Timed out waiting for the user profile update")
+        try await TestInfrastructure.waitForUserLoadingToFinish()
     }
 
     private func waitForVerificationEmail() async throws -> [String: Any] {
-        for _ in 0..<80 {
-            let verification = try await getJSON(path: "test/email-verification/latest")
-            if verification["status"] as? String == "OK" {
-                return verification
-            }
+        try await waitForJSON(path: "test/email-verification/latest", description: "email verification message") {
+            $0["status"] as? String == "OK"
+        }
+    }
 
+    private func waitForJSON(
+        path: String,
+        description: String,
+        matches: ([String: Any]) -> Bool
+    ) async throws -> [String: Any] {
+        let deadline = ProcessInfo.processInfo.systemUptime + 15
+        var lastCapture: [String: Any] = [:]
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            do {
+                lastCapture = try await getJSON(path: path, timeout: max(0.001, deadline - ProcessInfo.processInfo.systemUptime))
+            } catch {
+                throw RowndError("Failed waiting for \(description): \(error). Last capture: \(lastCapture)")
+            }
+            if matches(lastCapture) { return lastCapture }
             try await Task.sleep(nanoseconds: 25_000_000)
         }
-
-        throw RowndError("Timed out waiting for the email verification message")
+        throw RowndError("Timed out after 15s waiting for \(description). Last capture: \(lastCapture)")
     }
 
     private func assertSuccessfulSingleEmailUpdate(_ request: [String: Any], email: String) throws {
@@ -973,9 +950,10 @@ import AnyCodable
         return try #require(payload["sessionHandle"] as? String)
     }
 
-    private func getJSON(path: String) async throws -> [String: Any] {
+    private func getJSON(path: String, timeout: TimeInterval = 60) async throws -> [String: Any] {
         let url = TestInfrastructure.backendURL.appendingPathComponent(path)
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let request = URLRequest(url: url, timeoutInterval: timeout)
+        let (data, response) = try await URLSession.shared.data(for: request)
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
         #expect(statusCode == 200)
 

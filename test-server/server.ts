@@ -9,6 +9,7 @@ import AccountLinking from 'supertokens-node/recipe/accountlinking';
 import EmailVerification from 'supertokens-node/recipe/emailverification';
 import Multitenancy from 'supertokens-node/recipe/multitenancy';
 import { SerialTaskQueue } from './serial-task-queue';
+import { PendingOperations } from './pending-operations';
 import { requestDiagnostics, snapshotPendingRequests, startRequestDiagnostics } from './request-diagnostics';
 import Passwordless from 'supertokens-node/recipe/passwordless';
 import Session from 'supertokens-node/recipe/session';
@@ -1101,7 +1102,15 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     res.json({ status: 'OK' });
   });
 
-  app.use(middleware());
+  const profileOperations = new PendingOperations();
+  const supertokensMiddleware = middleware();
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/auth/plugin/rownd/user') || req.path === '/auth/user/email/verify') {
+      void profileOperations.run(() => supertokensMiddleware(req, res, next)).catch(next);
+    } else {
+      void supertokensMiddleware(req, res, next);
+    }
+  });
 
   app.post('/hub/auth/token', (_req, res) => {
     counters.legacyRefresh += 1;
@@ -1138,8 +1147,22 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     });
   });
 
-  app.post('/reset', async (_req, res) => {
+  async function drainProfileOperations() {
     snapshotPendingRequests();
+    restoreStaleRefreshRace();
+    restoreUserGetBehavior();
+    // Released holds enter the middleware on the next microtask.
+    await Promise.resolve();
+    await profileOperations.drain();
+  }
+
+  app.post('/test/drain-profile-operations', async (_req, res) => {
+    await drainProfileOperations();
+    res.json({ status: 'OK' });
+  });
+
+  app.post('/reset', async (_req, res) => {
+    await drainProfileOperations();
     // A disconnected fixture request still has to restore Core's tenant configuration.
     await sessionFixtureQueue.run(resetCounters);
     res.json({ status: 'OK' });

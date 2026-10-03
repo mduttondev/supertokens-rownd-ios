@@ -28,7 +28,7 @@ jobs:
           xcode-version: 26.0.1
 
       - name: Prepare iOS simulator
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: bash .github/scripts/setup-ios-simulator.sh
 
       - name: Cache Swift dependencies
@@ -62,7 +62,7 @@ jobs:
           xcode-version: 26.0.1
 
       - name: Prepare iOS simulator
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: bash .github/scripts/setup-ios-simulator.sh
 
       - name: Run CocoaPods consumer runtime test
