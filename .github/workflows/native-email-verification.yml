@@ -79,6 +79,10 @@ jobs:
       - name: Resolve Swift dependencies
         run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
 
+      - name: Prepare iOS simulator
+        timeout-minutes: 5
+        run: bash .github/scripts/setup-ios-simulator.sh
+
       - name: Run stale-authentication ordering test
         env:
           E2E_CORE_IMAGE: ${{ inputs.core_image }}

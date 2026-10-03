@@ -22,7 +22,7 @@ for linkage in static-library static-framework dynamic-framework; do
   xcodebuild \
     -workspace "$work_dir/CocoaPodsRuntime.xcworkspace" \
     -scheme CocoaPodsRuntime \
-    -destination "${COCOAPODS_RUNTIME_DESTINATION:-platform=iOS Simulator,name=iPhone 17}" \
+    -destination "${COCOAPODS_RUNTIME_DESTINATION:-${IOS_SIMULATOR_DESTINATION:-platform=iOS Simulator,name=iPhone 17}}" \
     -derivedDataPath "$work_dir/DerivedData" \
     -parallel-testing-enabled NO \
     test
