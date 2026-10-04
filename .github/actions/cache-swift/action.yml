@@ -1,0 +1,44 @@
+name: Cache Swift package downloads
+description: Resolve pinned packages using cached repositories, without caching build products
+inputs:
+  workspace:
+    default: rownd.xcworkspace
+    description: Workspace to resolve
+  scheme:
+    default: RowndE2E
+    description: Scheme to resolve
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache/restore@v4
+      id: restore
+      with:
+        path: |
+          ${{ runner.temp }}/swiftpm/repositories
+          ${{ runner.temp }}/swiftpm/artifacts
+        key: swift-downloads-v1-${{ runner.os }}-${{ runner.arch }}-xcode-26.0.1-${{ inputs.workspace }}-${{ hashFiles('Package.resolved', 'rownd.xcworkspace/xcshareddata/swiftpm/Package.resolved', 'Package.swift') }}
+        restore-keys: |
+          swift-downloads-v1-${{ runner.os }}-${{ runner.arch }}-xcode-26.0.1-
+    - name: Resolve and measure downloads
+      id: size
+      shell: bash
+      env:
+        WORKSPACE: ${{ inputs.workspace }}
+        SCHEME: ${{ inputs.scheme }}
+        EXACT_CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+      run: |
+        echo "IOS_SWIFTPM_CACHE=$RUNNER_TEMP/swiftpm" >> "$GITHUB_ENV"
+        mkdir -p "$RUNNER_TEMP/swiftpm/repositories" "$RUNNER_TEMP/swiftpm/artifacts"
+        args=()
+        if [[ "$EXACT_CACHE_HIT" == true ]]; then args+=(-skipPackageUpdates); fi
+        xcodebuild -resolvePackageDependencies -workspace "$WORKSPACE" -scheme "$SCHEME" -clonedSourcePackagesDirPath "$RUNNER_TEMP/swiftpm" "${args[@]}"
+        size_kb=$(du -sk "$RUNNER_TEMP/swiftpm/repositories" "$RUNNER_TEMP/swiftpm/artifacts" | awk '{ sum += $1 } END { print sum }')
+        echo "Swift download cache: $size_kb KiB (limit 786432 KiB)"
+        if (( size_kb <= 786432 )); then echo 'save=true' >> "$GITHUB_OUTPUT"; fi
+    - uses: actions/cache/save@v4
+      if: steps.restore.outputs.cache-hit != 'true' && steps.size.outputs.save == 'true'
+      with:
+        path: |
+          ${{ runner.temp }}/swiftpm/repositories
+          ${{ runner.temp }}/swiftpm/artifacts
+        key: ${{ steps.restore.outputs.cache-primary-key }}

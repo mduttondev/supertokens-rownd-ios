@@ -348,6 +348,8 @@ final class RowndManageAccountEmailUITests: XCTestCase {
 
     private func openVerificationLinkInSafari(_ link: String, app: XCUIApplication) throws {
         let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        safari.terminate()
+        addTeardownBlock { safari.terminate() }
         safari.launch()
 
         let addressField = safari.textFields["Address"]
@@ -425,39 +427,52 @@ final class RowndManageAccountEmailUITests: XCTestCase {
 
     private func scrollToElement(_ element: XCUIElement, in app: XCUIApplication) throws {
         let scrollView = app.scrollViews.firstMatch
+        // isHittable accepts a sliver at the screen edge; tapping it can hit the home indicator.
+        let isFullyVisible = {
+            element.exists && element.isHittable
+                && scrollView.frame.intersection(app.frame).contains(element.frame)
+        }
         for _ in 0..<6 {
-            if element.exists && element.isHittable {
+            if isFullyVisible() {
                 return
             }
             scrollView.swipeUp()
         }
         for _ in 0..<6 {
-            if element.exists && element.isHittable {
+            if isFullyVisible() {
                 return
             }
             scrollView.swipeDown()
         }
-        guard element.exists && element.isHittable else {
+        guard isFullyVisible() else {
             throw UITestError.elementNotHittable
         }
     }
 
     private func replaceText(in field: XCUIElement, with text: String) throws {
         for _ in 0..<3 {
-            let currentValueLength = (field.value as? String)?.count ?? 0
             field.tap()
-            // Hardware-key events during keyboard presentation can stall XCTest's animation-idle tracking.
             XCTAssertTrue(XCUIApplication().keyboards.firstMatch.waitForExistence(timeout: 5))
-            field.typeKey("a", modifierFlags: .command)
-            for _ in 0..<currentValueLength {
-                field.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: [])
-            }
+            // Hardware-key shortcuts are unreliable in WKWebView and can stall
+            // XCTest's keyboard animation tracking. Use the real editing menu.
+            field.press(forDuration: 1)
+            let selectAll = XCUIApplication().menuItems["Select All"]
+            guard selectAll.waitForExistence(timeout: 2) else { continue }
+            selectAll.tap()
+            field.typeText(XCUIKeyboardKey.delete.rawValue)
+            guard (try? waitForValue(field, toEqual: "", timeout: 5)) != nil else { continue }
             field.typeText(text)
             if (try? waitForValue(field, toEqual: text, timeout: 2)) != nil {
                 return
             }
         }
         throw UITestError.timedOutWaitingForElement
+    }
+
+    private func textValue(in field: XCUIElement) -> String? {
+        guard let value = field.value as? String else { return nil }
+        // WebKit exposes the placeholder as the accessibility value of an empty input.
+        return value == field.placeholderValue ? "" : value
     }
 
     private func waitForLabel(
@@ -494,7 +509,7 @@ final class RowndManageAccountEmailUITests: XCTestCase {
         timeout: TimeInterval = 10
     ) throws {
         let expectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", value),
+            predicate: NSPredicate { _, _ in self.textValue(in: element) == value },
             object: element
         )
         guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {

@@ -44,7 +44,10 @@ jobs:
         run: npm ci
 
       - name: Resolve Swift dependencies
-        run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
+        uses: ./.github/actions/cache-swift
+        with:
+          workspace: RowndPackage.xcworkspace
+          scheme: Rownd
 
       - name: Prepare iOS simulator
         timeout-minutes: 10
@@ -112,8 +115,8 @@ jobs:
           cache: npm
 
       - name: Set up Docker
-        timeout-minutes: 10
-        run: bash .github/scripts/setup-docker-macos.sh
+        timeout-minutes: 15
+        uses: ./.github/actions/setup-e2e
 
       - name: Install iOS SDK dependencies
         timeout-minutes: 3
@@ -125,7 +128,7 @@ jobs:
 
       - name: Resolve Swift dependencies
         timeout-minutes: 10
-        run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
+        uses: ./.github/actions/cache-swift
 
       - name: Prepare iOS simulator
         timeout-minutes: 10
@@ -138,8 +141,8 @@ jobs:
           IOS_E2E_UI_RESULTS_DIR: ${{ runner.temp }}/ios-e2e-ui-results
           IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
         run: |
-          node --import tsx --test test-server/diagnostics.test.ts test-server/ui-command.test.ts test-server/serial-task-queue.test.ts test-server/startup.test.ts
-          npm run test:e2e && IOS_E2E_ONLY_UI=1 IOS_E2E_UI_SCRIPT=test:e2e:safari-handoff npm run test:e2e
+          node --import tsx --test test-server/diagnostics.test.ts test-server/ui-command.test.ts test-server/simulator-destination.test.ts test-server/serial-task-queue.test.ts test-server/startup.test.ts
+          npm run test:e2e
 
       - name: Collect E2E failure resources
         if: ${{ !success() }}

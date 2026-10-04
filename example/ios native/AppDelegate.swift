@@ -125,6 +125,14 @@ enum E2ESupport {
     }
 
     static func sessionHandle(from accessToken: String?) -> String? {
+        accessTokenClaims(from: accessToken)?["sessionHandle"] as? String
+    }
+
+    static func accessTokenExpiresAt(from accessToken: String?) -> Double? {
+        accessTokenClaims(from: accessToken)?["exp"] as? Double
+    }
+
+    private static func accessTokenClaims(from accessToken: String?) -> [String: Any]? {
         guard let accessToken else { return nil }
         let parts = accessToken.split(separator: ".")
         guard parts.count > 1 else { return nil }
@@ -136,7 +144,7 @@ enum E2ESupport {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        return json["sessionHandle"] as? String
+        return json
     }
 
     static func configureRownd(launchOptions: [UIApplication.LaunchOptionsKey: Any]?) async {
@@ -371,6 +379,7 @@ struct E2EStatusView: View {
                     .accessibilityIdentifier("e2e-access-token-validity")
                 Text(E2ESupport.sessionHandle(from: state.current.auth.accessToken) ?? "no-session")
                     .accessibilityIdentifier("e2e-session-handle")
+                    .accessibilityValue(String(E2ESupport.accessTokenExpiresAt(from: state.current.auth.accessToken) ?? 0))
                 Text(cachedUserEmail)
                     .accessibilityIdentifier("e2e-cached-user-email")
                 Text((state.current.user.data["user_id"]?.value as? String) ?? "no-user")

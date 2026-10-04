@@ -260,11 +260,16 @@ final class RowndRealHubAuthenticationUITests: XCTestCase {
         try waitForLabel(app.staticTexts["e2e-auth-state"], equalTo: "authenticated")
         let sessionHandle = app.staticTexts["e2e-session-handle"].label
         XCTAssertNotEqual(sessionHandle, "no-session")
+        let expiration = try XCTUnwrap(app.staticTexts["e2e-session-handle"].value as? String)
+        let expiresAt = Date(timeIntervalSince1970: try XCTUnwrap(Double(expiration)))
+        XCTAssertGreaterThan(expiresAt.timeIntervalSince1970, 0)
         app.terminate()
 
-        // Exceed the real Core-issued 90-second lifetime while the process is
-        // stopped. Keeping it above 60 seconds avoids Rownd's proactive margin.
-        try await Task.sleep(nanoseconds: 91_000_000_000)
+        // The fixture still issues a 90-second token (> Rownd's 60-second margin).
+        // UI interaction and process shutdown have already consumed part of its lifetime.
+        let remaining = max(0, expiresAt.timeIntervalSinceNow + 1)
+        print("Waiting \(remaining)s for the Core-issued token to expire")
+        try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
         let beforeRelaunch = try await request("GET", path: "counters")
         XCTAssertEqual(beforeRelaunch["stRefresh"] as? Int, 0)
         _ = try await request("POST", path: "test/refresh-availability", jsonBody: ["unavailable": refreshUnavailable])

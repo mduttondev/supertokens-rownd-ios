@@ -1,9 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { delay, stopChild } from './process';
 import { backendStartupTimeoutMs, logDockerDiagnostics } from './startup';
 import { collectResourceDiagnostics } from './resource-diagnostics';
-import { uiCommandArgs } from './ui-command';
+import { resultBundleArgs, uiCommandArgs } from './ui-command';
+import { resolveSimulatorDestinations } from './simulator-destination';
 
 const harnessPort = Number(process.env.IOS_HARNESS_PORT || 3100);
 const apiUrl = `http://127.0.0.1:${harnessPort}`;
@@ -37,6 +39,7 @@ function start(command: string, args: string[], env = environment, cwd = process
 }
 
 async function run(command: string, args: string[], cwd = process.cwd()) {
+  const started = Date.now();
   const child = start(command, args, environment, cwd);
   activeCommand = child;
 
@@ -52,9 +55,59 @@ async function run(command: string, args: string[], cwd = process.cwd()) {
       });
     });
   } finally {
+    console.log(`E2E command duration: ${((Date.now() - started) / 1000).toFixed(1)}s: ${command} ${args.join(' ')}`);
     if (activeCommand === child) {
       activeCommand = undefined;
     }
+  }
+}
+
+async function runBuiltSuite() {
+  const requestedDestination = process.env.IOS_SIMULATOR_DESTINATION || 'platform=iOS Simulator,name=iPhone 17';
+  const [simulator, safariSimulator] = await resolveSimulatorDestinations([
+    requestedDestination, process.env.IOS_E2E_SAFARI_DESTINATION || requestedDestination,
+  ]);
+  const destination = simulator.destination;
+  const resultsDirectory = process.env.IOS_E2E_UI_RESULTS_DIR || path.join(tmpdir(), 'ios-e2e-results');
+  const derivedData = process.env.IOS_E2E_DERIVED_DATA || path.join(tmpdir(), 'ios-e2e-derived-data');
+  const packageArgs = process.env.IOS_SWIFTPM_CACHE ? ['-clonedSourcePackagesDirPath', process.env.IOS_SWIFTPM_CACHE] : [];
+  // The package workspace pins different dependency versions from the example.
+  // Keep that integration coverage instead of silently switching its package graph.
+  if (process.env.IOS_E2E_ONLY_UI !== '1') {
+    await run('xcodebuild', ['-workspace', 'RowndPackage.xcworkspace', '-scheme', 'RowndIntegration',
+      '-derivedDataPath', path.join(derivedData, 'integration'), '-destination', destination,
+      '-parallel-testing-enabled', 'NO', ...packageArgs, 'test', ...resultBundleArgs('integration', resultsDirectory)]);
+    assertResourcesRunning();
+  }
+  const args = ['-workspace', 'rownd.xcworkspace', '-scheme', 'RowndE2E',
+    '-derivedDataPath', path.join(derivedData, 'example'), '-parallel-testing-enabled', 'NO', ...packageArgs];
+  await run('xcodebuild', [...args, '-destination', destination, 'build-for-testing']);
+  const safariTest = 'rownd_ios_exampleUITests/RowndManageAccountEmailUITests/testEditingEmailThroughSafariOpensAppAndPersistsVerifiedProfile';
+  const phases = [
+    ...(process.env.IOS_E2E_ONLY_UI === '1' ? [] : [
+      { name: 'example', filters: [
+        '-only-testing:rownd_ios_exampleTests/RowndExampleTests/testExampleAppCanUseHarnessBackedSuperTokensSession',
+        '-only-testing:rownd_ios_exampleTests/RowndExampleTests/testPostAppleCompletionDismissesRealBottomSheetBeforeRestoringOnboardingTouches',
+        '-only-testing:rownd_ios_exampleTests/RowndExampleTests/testHarnessBackedAppleCompletionCreatesUsableSessionAndDismissesRealHub',
+      ] },
+    ]),
+    { name: 'ui', filters: ['-only-testing:rownd_ios_exampleUITests', `-skip-testing:${safariTest}`] },
+    { name: 'safari', filters: [`-only-testing:${safariTest}`] },
+  ];
+  for (const phase of phases) {
+    assertResourcesRunning();
+    if (phase.name === 'ui' && process.env.IOS_E2E_DIAGNOSTICS_DIR) await collectResourceDiagnostics('ui-start');
+    const phaseSimulator = phase.name === 'safari' ? safariSimulator : simulator;
+    const phaseDestination = phaseSimulator.destination;
+    if (phase.name === 'ui' || phase.name === 'safari') {
+      await run('xcrun', phaseSimulator.bootArgs);
+    }
+    // Each XCTest also terminates the app and resets native/WebKit state before launch.
+    // Drain backend operations and remove fault injection between entire test processes.
+    const reset = await fetch(`${apiUrl}/reset`, { method: 'POST', signal: AbortSignal.timeout(30_000) });
+    if (!reset.ok) throw new Error(`Backend reset before ${phase.name} failed: HTTP ${reset.status}`);
+    await run('xcodebuild', [...args, '-destination', phaseDestination,
+      'test-without-building', ...phase.filters, ...resultBundleArgs(phase.name, resultsDirectory)]);
   }
 }
 
@@ -178,14 +231,18 @@ async function main() {
     await Promise.all([waitForHealth(`${apiUrl}/health`, startupTimeoutMs), waitForHealth(hubHealthUrl)]);
     backendReady = true;
     if (process.env.IOS_E2E_DIAGNOSTICS_DIR) await collectResourceDiagnostics('ready');
-    if (process.env.IOS_E2E_ONLY_UI !== '1') {
-      await run('npm', ['run', 'test:integration']);
-      assertResourcesRunning();
-      await run('npm', ['run', 'test:e2e:example']);
-      assertResourcesRunning();
+    if (!process.env.IOS_E2E_UI_SCRIPT) {
+      await runBuiltSuite();
+    } else {
+      if (process.env.IOS_E2E_ONLY_UI !== '1') {
+        await run('npm', ['run', 'test:integration']);
+        assertResourcesRunning();
+        await run('npm', ['run', 'test:e2e:example']);
+        assertResourcesRunning();
+      }
+      if (process.env.IOS_E2E_DIAGNOSTICS_DIR) await collectResourceDiagnostics('ui-start');
+      await run('npm', uiCommandArgs(process.env.IOS_E2E_UI_SCRIPT));
     }
-    if (process.env.IOS_E2E_DIAGNOSTICS_DIR) await collectResourceDiagnostics('ui-start');
-    await run('npm', uiCommandArgs(process.env.IOS_E2E_UI_SCRIPT || 'test:e2e:ui'));
     assertResourcesRunning();
   } catch (error) {
     failure = error;

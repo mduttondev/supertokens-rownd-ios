@@ -32,15 +32,10 @@ jobs:
         run: bash .github/scripts/setup-ios-simulator.sh
 
       - name: Cache Swift dependencies
-        uses: actions/cache@v4
+        uses: ./.github/actions/cache-swift
         with:
-          path: ${{ runner.temp }}/swiftpm
-          key: ${{ runner.os }}-${{ runner.arch }}-xcode-26.0.1-swiftpm-${{ hashFiles('Package.resolved', 'rownd.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-xcode-26.0.1-swiftpm-
-
-      - name: Resolve Swift dependencies
-        run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd -clonedSourcePackagesDirPath "$RUNNER_TEMP/swiftpm"
+          workspace: RowndPackage.xcworkspace
+          scheme: Rownd
 
       - name: Run package tests
         run: xcodebuild -workspace RowndPackage.xcworkspace -scheme Rownd -destination "$IOS_SIMULATOR_DESTINATION" -clonedSourcePackagesDirPath "$RUNNER_TEMP/swiftpm" -skip-testing:RowndIntegrationTests -parallel-testing-enabled NO test

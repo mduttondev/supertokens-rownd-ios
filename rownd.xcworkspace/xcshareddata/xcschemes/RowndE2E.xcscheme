@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="2620" version="1.7">
+   <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
+      <BuildActionEntries>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B374E52528542AEF00955719" BuildableName="Landmarks.app" BlueprintName="landmarks" ReferencedContainer="container:example/landmarks.xcodeproj" />
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction buildConfiguration="Debug" shouldUseLaunchSchemeArgsEnv="NO">
+      <Testables>
+         <TestableReference skipped="NO" parallelizable="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B30010082E00200000A10001" BuildableName="rownd_ios_exampleTests.xctest" BlueprintName="rownd_ios_exampleTests" ReferencedContainer="container:example/landmarks.xcodeproj" />
+         </TestableReference>
+         <TestableReference skipped="NO" parallelizable="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B30011042E00200000A10001" BuildableName="rownd_ios_exampleUITests.xctest" BlueprintName="rownd_ios_exampleUITests" ReferencedContainer="container:example/landmarks.xcodeproj" />
+         </TestableReference>
+      </Testables>
+      <EnvironmentVariables>
+         <EnvironmentVariable key="ROWND_EXAMPLE_API_DOMAIN" value="http://127.0.0.1:3100" isEnabled="YES" />
+      </EnvironmentVariables>
+   </TestAction>
+   <LaunchAction buildConfiguration="Debug" />
+   <ProfileAction buildConfiguration="Release" />
+   <AnalyzeAction buildConfiguration="Debug" />
+   <ArchiveAction buildConfiguration="Release" />
+</Scheme>

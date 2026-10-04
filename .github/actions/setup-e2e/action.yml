@@ -1,0 +1,49 @@
+name: Prepare E2E downloads and Docker
+description: Cache pinned tools and bounded image archives on Intel macOS
+inputs:
+  core-image:
+    default: supertokens/supertokens-postgresql:12.0.10
+    description: Core image, including tag or digest
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache/restore@v4
+      id: tools
+      with:
+        path: |
+          ${{ runner.temp }}/ios-docker-tools/downloads/lima.tar.gz
+          ${{ runner.temp }}/ios-docker-tools/downloads/colima
+          ${{ runner.temp }}/ios-docker-tools/downloads/docker.tgz
+        key: docker-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/scripts/setup-docker-macos.sh') }}
+    - name: Start Docker
+      shell: bash
+      run: bash .github/scripts/setup-docker-macos.sh
+    - uses: actions/cache/save@v4
+      if: steps.tools.outputs.cache-hit != 'true'
+      with:
+        path: |
+          ${{ runner.temp }}/ios-docker-tools/downloads/lima.tar.gz
+          ${{ runner.temp }}/ios-docker-tools/downloads/colima
+          ${{ runner.temp }}/ios-docker-tools/downloads/docker.tgz
+        key: ${{ steps.tools.outputs.cache-primary-key }}
+    - name: Select image cache generation
+      id: generation
+      shell: bash
+      run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@v4
+      id: images
+      with:
+        path: ${{ runner.temp }}/ios-docker-images/images.tar.gz
+        key: docker-images-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.core-image }}-${{ steps.generation.outputs.week }}-${{ hashFiles('.github/scripts/cache-docker-images.sh', '.github/scripts/setup-docker-macos.sh', 'package-lock.json') }}
+    - name: Load or download images
+      id: image-size
+      continue-on-error: true
+      shell: bash
+      env:
+        E2E_CORE_IMAGE: ${{ inputs.core-image }}
+      run: bash .github/scripts/cache-docker-images.sh
+    - uses: actions/cache/save@v4
+      if: steps.images.outputs.cache-hit != 'true' && steps.image-size.outputs.save == 'true'
+      with:
+        path: ${{ runner.temp }}/ios-docker-images/images.tar.gz
+        key: ${{ steps.images.outputs.cache-primary-key }}

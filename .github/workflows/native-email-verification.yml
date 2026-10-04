@@ -63,8 +63,10 @@ jobs:
           cache: npm
 
       - name: Set up Docker
-        timeout-minutes: 10
-        run: bash .github/scripts/setup-docker-macos.sh
+        timeout-minutes: 15
+        uses: ./.github/actions/setup-e2e
+        with:
+          core-image: ${{ inputs.core_image }}
 
       - name: Install dependencies
         run: |
@@ -78,26 +80,19 @@ jobs:
 
       - name: Resolve Swift dependencies
         timeout-minutes: 10
-        run: xcodebuild -resolvePackageDependencies -workspace RowndPackage.xcworkspace -scheme Rownd
+        uses: ./.github/actions/cache-swift
 
       - name: Prepare iOS simulator
         timeout-minutes: 10
         run: bash .github/scripts/setup-ios-simulator.sh
 
-      - name: Run stale-authentication ordering test
-        env:
-          IOS_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/ios-e2e-diagnostics
-          E2E_CORE_IMAGE: ${{ inputs.core_image }}
-          IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
-        run: npm run test:e2e:stale-refresh-race
-
-      - name: Run Safari handoff test
+      - name: Run stale-authentication ordering and Safari handoff tests
         env:
           IOS_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/ios-e2e-diagnostics
           IOS_E2E_UI_RESULTS_DIR: ${{ runner.temp }}/ios-e2e-ui-results
           E2E_CORE_IMAGE: ${{ inputs.core_image }}
           IOS_E2E_ONLY_UI: 1
-          IOS_E2E_UI_SCRIPT: test:e2e:safari-handoff
+          IOS_E2E_UI_SCRIPT: test:e2e:ui:native-email-verification
           IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
         run: npm run test:e2e
 

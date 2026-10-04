@@ -16,6 +16,9 @@ mkdir -p "$tools/bin" "$tools/downloads"
 # and installing Compose/Buildx, neither of which this Testcontainers harness uses.
 download() {
   local url="$1" file="$2" checksum="$3"
+  if [[ -f "$tools/downloads/$file" ]] && echo "$checksum  $tools/downloads/$file" | shasum -a 256 --check; then
+    return
+  fi
   curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 120 \
     "$url" -o "$tools/downloads/$file"
   echo "$checksum  $tools/downloads/$file" | shasum -a 256 --check
