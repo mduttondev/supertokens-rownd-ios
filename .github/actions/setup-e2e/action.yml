@@ -1,5 +1,5 @@
 name: Prepare E2E downloads and Docker
-description: Cache pinned tools and start Docker on Intel macOS; the harness pulls images on demand
+description: Cache pinned tools and start Docker on Intel macOS before the workflow prefetches E2E images
 runs:
   using: composite
   steps:

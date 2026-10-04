@@ -85,7 +85,7 @@ jobs:
     timeout-minutes: 75
     env:
       IOS_E2E_BACKEND_STARTUP_TIMEOUT_MS: '600000'
-      # Cold pulls took ~400s; allow 180s for readiness within the 600s backend budget.
+      # Image downloads have a separate prefetch budget; this bounds container readiness.
       IOS_E2E_CONTAINER_STARTUP_TIMEOUT_MS: '180000'
       DEBUG: testcontainers,testcontainers:pull
     steps:
@@ -117,6 +117,11 @@ jobs:
       - name: Set up Docker
         timeout-minutes: 10
         uses: ./.github/actions/setup-e2e
+
+      - name: Prefetch E2E images
+        # Cold pulls took ~8 minutes; keep downloads outside backend startup and simulator boot.
+        timeout-minutes: 15
+        run: bash .github/scripts/prefetch-e2e-images.sh
 
       - name: Install iOS SDK dependencies
         timeout-minutes: 3
