@@ -1,5 +1,23 @@
 # Changelog
 
+## <small>0.2.7 (2026-10-04)</small>
+
+* ci: allow sufficient time for Swift dependency resolution ([eb44310](https://github.com/supertokens/supertokens-rownd-ios/commit/eb44310))
+* ci: isolate CocoaPods checks and diagnose E2E startup timeouts ([45f82a1](https://github.com/supertokens/supertokens-rownd-ios/commit/45f82a1))
+* ci: provision iOS simulator and target its exact device ID ([89751e3](https://github.com/supertokens/supertokens-rownd-ios/commit/89751e3))
+* ci: recover stuck simulators and remove costly image archiving ([34060d1](https://github.com/supertokens/supertokens-rownd-ios/commit/34060d1))
+* ci: resolve diagnostics directory in step environment ([9f20323](https://github.com/supertokens/supertokens-rownd-ios/commit/9f20323))
+* ci: retain UI test results and trace authentication requests ([ea7dbc9](https://github.com/supertokens/supertokens-rownd-ios/commit/ea7dbc9))
+* ci: retry simulator boot and await integration request completion ([1ec5f43](https://github.com/supertokens/supertokens-rownd-ios/commit/1ec5f43))
+* ci: reuse E2E builds and backend with targeted dependency caches ([2fb37fd](https://github.com/supertokens/supertokens-rownd-ios/commit/2fb37fd))
+* ci: serialize expiry fixtures and capture E2E failure diagnostics ([47937ad](https://github.com/supertokens/supertokens-rownd-ios/commit/47937ad))
+* ci: use prebuilt Docker tools and reserve E2E diagnostic headroom ([214c640](https://github.com/supertokens/supertokens-rownd-ios/commit/214c640))
+* test: allow network-backed Apple completion time in CI ([fb56015](https://github.com/supertokens/supertokens-rownd-ios/commit/fb56015))
+* test: await profile hydration retry cleanup before assertions ([af3f690](https://github.com/supertokens/supertokens-rownd-ios/commit/af3f690))
+* improv: migrate legacy Rownd sessions directly with refresh tokens ([dca05c8](https://github.com/supertokens/supertokens-rownd-ios/commit/dca05c8))
+* fix: preserve newer state and harden E2E container startup ([000cebf](https://github.com/supertokens/supertokens-rownd-ios/commit/000cebf))
+* fix: synchronize network time with bounded NTP queries ([905eff0](https://github.com/supertokens/supertokens-rownd-ios/commit/905eff0))
+
 ## <small>0.2.6 (2026-09-29)</small>
 
 * fix: clear legacy session when token refresh fails ([2b0087b](https://github.com/supertokens/supertokens-rownd-ios/commit/2b0087b))

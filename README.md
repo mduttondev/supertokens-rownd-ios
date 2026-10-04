@@ -294,7 +294,7 @@ To apply customizations, we recommend subclassing the `RowndCustomizations` clas
 ```swift
 class AppCustomizations : RowndCustomizations {
     override var sheetBackgroundColor: UIColor {
-        return UIColor(red: 31/255, green: 37/255, blue: 80.2.6, alpha: 1.0)
+        return UIColor(red: 31/255, green: 37/255, blue: 80.2.7, alpha: 1.0)
     }
 }
 
