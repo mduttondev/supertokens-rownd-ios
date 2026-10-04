@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
-import { appendBoundedLine, requestDiagnostics, snapshotPendingRequests, startRequestDiagnostics } from './request-diagnostics';
+import { appendBoundedLine, observeRequestDiagnostics, requestDiagnostics, snapshotPendingRequests, startRequestDiagnostics } from './request-diagnostics';
 import { collectResourceDiagnostics } from './resource-diagnostics';
 
 async function listen(server: Server) {
@@ -123,7 +123,7 @@ test('resource probes continue after failures and never log command error detail
     if (command === 'colima') throw new Error('private-error-token');
     return 'safe resource counters';
   });
-  assert.equal(commands.length, 8);
+  assert.equal(commands.length, 10);
   assert.ok(commands.includes('sysctl hw.ncpu hw.memsize vm.swapusage'));
   assert.ok(commands.includes('sh -c ps -axo pid,ppid,%cpu,rss,comm | sort -k4,4nr | head -n 30'));
   assert.ok(commands.some((command) => command.includes('/proc/pressure/memory')));
@@ -131,4 +131,70 @@ test('resource probes continue after failures and never log command error detail
   assert.match(output, /unavailable/);
   assert.match(output, /safe resource counters/);
   assert.doesNotMatch(output, /private-error-token/);
+});
+
+test('passwordless and profile GET record only allowlisted HTTP metadata in console and artifact', async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'ios-request-diagnostics-'));
+  const previous = process.env.IOS_E2E_DIAGNOSTICS_DIR;
+  process.env.IOS_E2E_DIAGNOSTICS_DIR = directory;
+  t.after(() => {
+    if (previous === undefined) delete process.env.IOS_E2E_DIAGNOSTICS_DIR;
+    else process.env.IOS_E2E_DIAGNOSTICS_DIR = previous;
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const log = t.mock.method(console, 'log', () => {});
+  const server = createServer((req, res) => {
+    observeRequestDiagnostics(req, res, new URL(req.url!, 'http://localhost').pathname);
+    res.statusCode = req.headers['x-test-status'] ? Number(req.headers['x-test-status']) : 200;
+    res.setHeader('set-cookie', 'private-response-cookie');
+    req.resume();
+    res.end('private-response-body');
+  });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const url = await listen(server);
+  for (const [method, endpoint, status] of [
+    ['POST', '/auth/signinup/code', 200],
+    ['POST', '/auth/signinup/code/consume', 401],
+    ['GET', '/auth/plugin/rownd/user', 503],
+    ['GET', '/auth/plugin/rownd/user/private-user-id', 404],
+    ['DELETE', '/auth/signinup/code', 405],
+  ] as const) {
+    await (await fetch(`${url}${endpoint}?token=private-query`, {
+      method, headers: { authorization: 'Bearer private-token', cookie: 'private-cookie', 'x-test-status': String(status) },
+      body: method === 'POST' ? 'private-email-and-code' : undefined,
+    })).text();
+  }
+  const output = log.mock.calls.map((call) => String(call.arguments[0])).join('\n');
+  const artifact = readFileSync(path.join(directory, `requests-${process.pid}.ndjson`), 'utf8');
+  for (const text of [output, artifact]) {
+    assert.doesNotMatch(text, /private-|Bearer|authorization|cookie|\?token/);
+  }
+  const records = artifact.trim().split('\n').map((line) => JSON.parse(line));
+  const finished = records.filter((record) => record.event === 'response_finish');
+  assert.deepEqual(finished.map(({ endpoint, method, statusCode }) => [endpoint, method, statusCode]), [
+    ['/auth/signinup/code', 'POST', 200], ['/auth/signinup/code/consume', 'POST', 401], ['/auth/plugin/rownd/user', 'GET', 503],
+  ]);
+  assert.ok(finished.every((record) => record.durationMs >= 0 && record.completed));
+  assert.equal(records.filter((record) => record.event === 'request_start').length, 3);
+});
+
+test('UI snapshots retain booted IDs and runner counts without device names or process paths', async (t) => {
+  const log = t.mock.method(console, 'log', () => {});
+  await collectResourceDiagnostics('ui-start', async (command) => {
+    if (command === 'xcrun') return JSON.stringify({ devices: { 'private-runtime': [
+      { udid: '12345678-1234-1234-1234-123456789abc', state: 'Booted', name: 'private-device' },
+      { udid: 'private-invalid-id', state: 'Booted' },
+      { udid: '87654321-1234-1234-1234-123456789abc', state: 'Shutdown' },
+    ] } });
+    if (command === 'ps') return '/private-path/rownd_ios_exampleUITests-Runner\n/private-path/rownd_ios_exampleUITests-Runner\n/usr/bin/xctest\n/usr/bin/xcodebuild\n';
+    return 'safe counters';
+  });
+  const records = log.mock.calls.map((call) => JSON.parse(String(call.arguments[0]).replace('[iOS E2E resources] ', '')));
+  assert.deepEqual(JSON.parse(records.find((record) => record.probe === 'simulators').output), [
+    { udid: '12345678-1234-1234-1234-123456789abc', state: 'Booted' },
+  ]);
+  assert.deepEqual(JSON.parse(records.find((record) => record.probe === 'ui-runners').output), {
+    uiRunnerCount: 2, xctestCount: 1, xcodebuildCount: 1,
+  });
+  assert.doesNotMatch(JSON.stringify(records), /private-|87654321/);
 });

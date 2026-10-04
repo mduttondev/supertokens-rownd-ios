@@ -1,8 +1,9 @@
 # E2E failure diagnostics
 
-Release E2E jobs upload `ios-e2e-diagnostics-<run>-<attempt>` on failure or cancellation (7-day retention).
+Release and native-email-verification E2E jobs upload `ios-e2e-diagnostics-<run>-<attempt>`
+on failure or cancellation (7-day retention).
 The runner writes snapshots before testing and **before failure cleanup**, while Core/Postgres
-are still running, including on SIGINT/SIGTERM. A workflow fallback also samples resources
+are still running, including on SIGINT/SIGTERM. A release workflow fallback also samples resources
 after a failed or cancelled step. Abrupt runner termination can still prevent uploads.
 
 To enable locally:
@@ -18,12 +19,47 @@ Files are separated by process ID and capped at 1 MiB each:
   bodies, query strings, exception details, or user/session identifiers.
 - `resources-*.ndjson`: host capacity/swap/VM counters, 30 largest processes by RSS
   (executable names, not arguments), Colima status and guest memory/pressure counters,
-  Docker capacity and one-shot usage. Eight concurrent probes, each with a 5-second
+  Docker capacity and one-shot usage. Eight concurrent probes at readiness; UI-start and
+  failure snapshots add booted simulator UUIDs and counts of `*UITests-Runner`, `xctest`,
+  and `xcodebuild` processes. These two additional probes emit no simulator names or
+  process paths/arguments. Each probe has a 5-second
   timeout and 64 KiB output limit; unavailable probes do not fail the tests.
 
 Test output and failure details remain in the GitHub Actions console. Child processes
 inherit stdio; the runner does not capture output through pipes or create test-summary
 artifacts. This avoids introducing a pipe-drain dependency on surviving descendants.
+
+## UI failures after run 37133580499
+
+Request diagnostics also cover `POST /auth/signinup/code`,
+`POST /auth/signinup/code/consume`, and `GET /auth/plugin/rownd/user`, starting before
+JSON parsing. Correlate arrival, 2-second pending events, elapsed time, HTTP status,
+and completion/abort with XCTest failures. Status means HTTP status only; application
+statuses inside response bodies are deliberately excluded. Exact allowlisted route
+names are recorded, never user-specific paths. Missing arrivals distinguish requests
+that never reached the harness from requests still waiting on a response.
+
+Both workflows set `IOS_E2E_UI_RESULTS_DIR` to `${RUNNER_TEMP}/ios-e2e-ui-results`.
+When `run-e2e.ts` invokes `test:e2e:ui` or `test:e2e:safari-handoff`, it appends an
+explicit `-resultBundlePath` via npm arguments. Every invocation reserves a unique
+`ui-*/tests.xcresult` or `safari-*/tests.xcresult` path, including repeated runs.
+Other script overrides and direct/local npm UI commands keep their existing behavior.
+To opt in locally, set `IOS_E2E_UI_RESULTS_DIR=/absolute/path/to/ui-results` when
+running `npm run test:e2e`.
+
+On failure or cancellation, `ios-e2e-ui-results-<run>-<attempt>` retains these bundles
+for **3 days**, including the XCTest attachments Xcode retained (screenshots and
+failure details). All available bundles from the job are uploaded, including an
+earlier successful suite if a later suite fails. Download and open `tests.xcresult`
+in Xcode to inspect the failing test's activity and attachments.
+
+Unlike metadata NDJSON, **xcresult is not redacted or byte-capped**: attachments and
+test logs may contain authentication data. Retention limits storage duration, not
+artifact size. The upload step has a 5-minute limit; a large bundle may fail to upload.
+Cancellation or abrupt termination can leave an incomplete/unreadable bundle or
+prevent upload entirely. UI-start/failure resource samples are one-shot snapshots,
+not peak runner counts. Metadata files remain capped at 1 MiB per process/file;
+neither the aggregate across processes nor console output has that cap.
 
 ## Reading the five outstanding failures from run 36980665092
 
@@ -94,8 +130,8 @@ a CI rerun. Example/UI/Safari coverage was not reached in this failed run.
 Checks:
 
 ```sh
-node --import tsx --test test-server/diagnostics.test.ts test-server/serial-task-queue.test.ts test-server/startup.test.ts
+node --import tsx --test test-server/diagnostics.test.ts test-server/ui-command.test.ts test-server/pending-operations.test.ts test-server/serial-task-queue.test.ts test-server/startup.test.ts
 ```
 
-Full xcresult bundles and container logs are intentionally not uploaded: they can
-contain authentication data and add substantial artifact volume.
+Container logs are not added to artifacts. Full UI xcresult retention is explicitly
+enabled for this investigation; it is separate from the bounded metadata artifact.

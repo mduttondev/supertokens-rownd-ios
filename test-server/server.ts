@@ -10,7 +10,7 @@ import EmailVerification from 'supertokens-node/recipe/emailverification';
 import Multitenancy from 'supertokens-node/recipe/multitenancy';
 import { SerialTaskQueue } from './serial-task-queue';
 import { PendingOperations } from './pending-operations';
-import { requestDiagnostics, snapshotPendingRequests, startRequestDiagnostics } from './request-diagnostics';
+import { observeRequestDiagnostics, requestDiagnostics, snapshotPendingRequests } from './request-diagnostics';
 import Passwordless from 'supertokens-node/recipe/passwordless';
 import Session from 'supertokens-node/recipe/session';
 import { verifySession } from 'supertokens-node/recipe/session/framework/express';
@@ -761,14 +761,7 @@ async function createIntegrationHarness(): Promise<IntegrationHarness> {
     }),
   );
   app.use((req, res, next) => {
-    if (req.method === 'POST' && req.path === '/test/expiring-session') {
-      startRequestDiagnostics(req, res, '/test/expiring-session');
-    } else if (req.method === 'PUT' && (
-      req.path === '/auth/plugin/rownd/user' || req.path === '/auth/plugin/rownd/user/field' ||
-      req.path === '/auth/plugin/rownd/user/meta'
-    )) {
-      startRequestDiagnostics(req, res, req.path);
-    }
+    observeRequestDiagnostics(req, res, req.path);
     next();
   });
   app.use(express.json());

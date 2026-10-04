@@ -86,14 +86,38 @@ jobs:
 
       - name: Run stale-authentication ordering test
         env:
+          IOS_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/ios-e2e-diagnostics
           E2E_CORE_IMAGE: ${{ inputs.core_image }}
           IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
         run: npm run test:e2e:stale-refresh-race
 
       - name: Run Safari handoff test
         env:
+          IOS_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/ios-e2e-diagnostics
+          IOS_E2E_UI_RESULTS_DIR: ${{ runner.temp }}/ios-e2e-ui-results
           E2E_CORE_IMAGE: ${{ inputs.core_image }}
           IOS_E2E_ONLY_UI: 1
           IOS_E2E_UI_SCRIPT: test:e2e:safari-handoff
           IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
         run: npm run test:e2e
+
+      - name: Retain UI XCTest results and attachments
+        if: ${{ !success() }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-e2e-ui-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-e2e-ui-results/**/*.xcresult/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Retain bounded E2E diagnostics
+        if: ${{ !success() }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-e2e-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-e2e-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 7

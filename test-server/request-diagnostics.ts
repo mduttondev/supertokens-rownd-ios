@@ -2,7 +2,8 @@ import { appendFileSync, mkdirSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 
-type Endpoint = '/test/expiring-session' | '/auth/plugin/rownd/user' | '/auth/plugin/rownd/user/field' | '/auth/plugin/rownd/user/meta';
+type Endpoint = '/test/expiring-session' | '/auth/plugin/rownd/user' | '/auth/plugin/rownd/user/field' | '/auth/plugin/rownd/user/meta' | '/auth/signinup/code' | '/auth/signinup/code/consume';
+type Method = 'GET' | 'POST' | 'PUT';
 type Phase = 'request' | 'queue' | 'config' | 'user' | 'session' | 'session-info' | 'restore';
 type CaptureState = 'not-captured' | 'pending' | 'completed' | 'superseded';
 const traces = new WeakMap<ServerResponse, RequestDiagnostics>();
@@ -25,7 +26,7 @@ export class RequestDiagnostics {
   private captureState: CaptureState = 'not-captured';
   private clientClosed = false;
 
-  constructor(req: IncomingMessage, private readonly res: ServerResponse, private readonly endpoint: Endpoint) {
+  constructor(req: IncomingMessage, private readonly res: ServerResponse, private readonly endpoint: Endpoint, private readonly method: Method) {
     this.log('request_start');
     const pending = setTimeout(() => this.log('request_pending'), 2_000);
     pending.unref();
@@ -48,7 +49,7 @@ export class RequestDiagnostics {
     // headers, query strings, bodies, or the capturedRequests object.
     const line = JSON.stringify({
       time: new Date().toISOString(), requestId: this.id, endpoint: this.endpoint,
-      method: this.endpoint === '/test/expiring-session' ? 'POST' : 'PUT',
+      method: this.method,
       event, phase: this.currentPhase, durationMs: Math.round(performance.now() - this.started),
       phaseDurationMs, captureState: this.captureState, clientClosed: this.clientClosed,
       completed: this.res.writableFinished,
@@ -92,10 +93,20 @@ export class RequestDiagnostics {
   snapshot() { this.log('reset_with_request_pending'); }
 }
 
-export function startRequestDiagnostics(req: IncomingMessage, res: ServerResponse, endpoint: Endpoint) {
-  const trace = new RequestDiagnostics(req, res, endpoint);
+export function startRequestDiagnostics(req: IncomingMessage, res: ServerResponse, endpoint: Endpoint, method: Method = endpoint === '/test/expiring-session' ? 'POST' : 'PUT') {
+  const trace = new RequestDiagnostics(req, res, endpoint, method);
   traces.set(res, trace);
   active.add(trace);
+}
+
+export function observeRequestDiagnostics(req: IncomingMessage, res: ServerResponse, pathname: string) {
+  if (req.method === 'POST' && (pathname === '/test/expiring-session' || pathname === '/auth/signinup/code' || pathname === '/auth/signinup/code/consume')) {
+    startRequestDiagnostics(req, res, pathname, 'POST');
+  } else if (req.method === 'GET' && pathname === '/auth/plugin/rownd/user') {
+    startRequestDiagnostics(req, res, pathname, 'GET');
+  } else if (req.method === 'PUT' && (pathname === '/auth/plugin/rownd/user' || pathname === '/auth/plugin/rownd/user/field' || pathname === '/auth/plugin/rownd/user/meta')) {
+    startRequestDiagnostics(req, res, pathname, 'PUT');
+  }
 }
 
 export function requestDiagnostics(res: ServerResponse) { return traces.get(res); }

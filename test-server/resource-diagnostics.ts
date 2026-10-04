@@ -16,6 +16,28 @@ const probes = [
   ['docker-usage', 'docker', ['stats', '--no-stream', '--format', '{{.Name}} CPU={{.CPUPerc}} Memory={{.MemUsage}} PIDs={{.PIDs}}']],
 ] as const;
 
+const uiProbes = [
+  ['simulators', 'xcrun', ['simctl', 'list', 'devices', '--json']],
+  ['ui-runners', 'ps', ['-axo', 'comm=']],
+] as const;
+
+function summarizeProbe(probe: string, output: string) {
+  if (probe === 'simulators') {
+    const devices = Object.values(JSON.parse(output).devices as Record<string, { udid: string; state: string }[]>).flat();
+    return JSON.stringify(devices.filter((device) => device.state === 'Booted' && /^[0-9a-f-]{36}$/i.test(device.udid))
+      .map((device) => ({ udid: device.udid, state: 'Booted' })));
+  }
+  if (probe === 'ui-runners') {
+    const executables = output.split('\n').map((line) => path.basename(line.trim()));
+    return JSON.stringify({
+      uiRunnerCount: executables.filter((name) => name.endsWith('UITests-Runner')).length,
+      xctestCount: executables.filter((name) => name === 'xctest').length,
+      xcodebuildCount: executables.filter((name) => name === 'xcodebuild').length,
+    });
+  }
+  return output.slice(0, 64 * 1024);
+}
+
 type ProbeRunner = (command: string, args: readonly string[]) => Promise<string>;
 const runProbe: ProbeRunner = async (command, args) => {
   const { stdout } = await execFileAsync(command, [...args], {
@@ -24,11 +46,12 @@ const runProbe: ProbeRunner = async (command, args) => {
   return stdout;
 };
 
-export async function collectResourceDiagnostics(stage: 'ready' | 'failure' | 'workflow-failure', run: ProbeRunner = runProbe) {
+export async function collectResourceDiagnostics(stage: 'ready' | 'ui-start' | 'failure' | 'workflow-failure', run: ProbeRunner = runProbe) {
   const time = new Date().toISOString();
   // Parallel, one-shot probes: bounded to ~5s total even if Colima is wedged.
-  const records = await Promise.all(probes.map(async ([probe, command, args]) => {
-    try { return { time, stage, probe, output: (await run(command, args)).slice(0, 64 * 1024) }; }
+  const selectedProbes = stage === 'ready' ? probes : [...probes, ...uiProbes];
+  const records = await Promise.all(selectedProbes.map(async ([probe, command, args]) => {
+    try { return { time, stage, probe, output: summarizeProbe(probe, await run(command, args)) }; }
     catch { return { time, stage, probe, output: 'unavailable (failed, timed out, or exceeded output limit)' }; }
   }));
   for (const record of records) {

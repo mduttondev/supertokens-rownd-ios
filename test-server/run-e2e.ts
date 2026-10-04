@@ -3,6 +3,7 @@ import path from 'node:path';
 import { delay, stopChild } from './process';
 import { backendStartupTimeoutMs, logDockerDiagnostics } from './startup';
 import { collectResourceDiagnostics } from './resource-diagnostics';
+import { uiCommandArgs } from './ui-command';
 
 const harnessPort = Number(process.env.IOS_HARNESS_PORT || 3100);
 const apiUrl = `http://127.0.0.1:${harnessPort}`;
@@ -183,7 +184,8 @@ async function main() {
       await run('npm', ['run', 'test:e2e:example']);
       assertResourcesRunning();
     }
-    await run('npm', ['run', process.env.IOS_E2E_UI_SCRIPT || 'test:e2e:ui']);
+    if (process.env.IOS_E2E_DIAGNOSTICS_DIR) await collectResourceDiagnostics('ui-start');
+    await run('npm', uiCommandArgs(process.env.IOS_E2E_UI_SCRIPT || 'test:e2e:ui'));
     assertResourcesRunning();
   } catch (error) {
     failure = error;

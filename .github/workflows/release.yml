@@ -135,9 +135,10 @@ jobs:
         timeout-minutes: 50
         env:
           IOS_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/ios-e2e-diagnostics
+          IOS_E2E_UI_RESULTS_DIR: ${{ runner.temp }}/ios-e2e-ui-results
           IOS_LOCAL_HUB_REPO: ${{ github.workspace }}/supertokens-rownd-hub
         run: |
-          node --import tsx --test test-server/diagnostics.test.ts test-server/serial-task-queue.test.ts test-server/startup.test.ts
+          node --import tsx --test test-server/diagnostics.test.ts test-server/ui-command.test.ts test-server/serial-task-queue.test.ts test-server/startup.test.ts
           npm run test:e2e && IOS_E2E_ONLY_UI=1 IOS_E2E_UI_SCRIPT=test:e2e:safari-handoff npm run test:e2e
 
       - name: Collect E2E failure resources
@@ -157,6 +158,17 @@ jobs:
           path: ${{ runner.temp }}/ios-e2e-diagnostics/
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Retain UI XCTest results and attachments
+        if: ${{ !success() }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-e2e-ui-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-e2e-ui-results/**/*.xcresult/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 3
 
   release:
     name: Release
