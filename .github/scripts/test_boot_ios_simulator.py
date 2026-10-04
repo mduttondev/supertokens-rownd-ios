@@ -11,7 +11,7 @@ spec.loader.exec_module(boot)
 
 
 class BootTests(unittest.TestCase):
-    def simulate(self, boot_results, shutdown=True):
+    def simulate(self, boot_results, shutdown=True, created_udid='fresh-udid'):
         calls = []
 
         def runner(command, timeout):
@@ -22,32 +22,45 @@ class BootTests(unittest.TestCase):
                 return shutdown
             return True
 
-        result = boot.boot('test-udid', runner)
+        def creator(runtime, device_type):
+            self.assertEqual(runtime, 'ios-26-2')
+            self.assertEqual(device_type, 'iphone-17')
+            calls.append((['xcrun', 'simctl', 'create'], 15))
+            return created_udid
+
+        result = boot.boot('test-udid', 'ios-26-2', 'iphone-17', runner, creator)
         return result, calls
 
     def test_success_does_not_reboot(self):
         result, calls = self.simulate([True])
-        self.assertTrue(result)
+        self.assertEqual(result, 'test-udid')
         self.assertEqual(len(calls), 1)
 
-    def test_timeout_diagnoses_and_retries_once(self):
+    def test_failure_retries_fresh_device_and_returns_its_destination(self):
         result, calls = self.simulate([False, True])
-        self.assertTrue(result)
+        self.assertEqual(result, 'fresh-udid')
         self.assertEqual([command[2] for command, _ in calls],
-                         ['bootstatus', 'list', 'spawn', 'shutdown', 'bootstatus'])
-        self.assertLessEqual(sum(timeout for _, timeout in calls), 550)
+                         ['bootstatus', 'list', 'spawn', 'shutdown', 'create', 'bootstatus'])
+        self.assertEqual(calls[0][0][3], 'test-udid')
+        self.assertEqual(calls[-1][0][3], 'fresh-udid')
+        self.assertLessEqual(sum(timeout for _, timeout in calls), 565)
 
     def test_second_failure_is_terminal_and_bounded(self):
         result, calls = self.simulate([False, False])
         self.assertFalse(result)
         self.assertEqual(sum(command[2] == 'bootstatus' for command, _ in calls), 2)
-        self.assertLessEqual(sum(timeout for _, timeout in calls), 550)
+        self.assertLessEqual(sum(timeout for _, timeout in calls), 565)
         self.assertFalse(any('delete' in command or 'erase' in command for command, _ in calls))
 
     def test_failed_shutdown_prevents_overlapping_boot(self):
         result, calls = self.simulate([False], shutdown=False)
         self.assertFalse(result)
         self.assertEqual(calls[-1][0][2], 'shutdown')
+
+    def test_failed_creation_does_not_retry_original_device(self):
+        result, calls = self.simulate([False], created_udid=None)
+        self.assertIsNone(result)
+        self.assertEqual(sum(command[2] == 'bootstatus' for command, _ in calls), 1)
 
     def test_timeout_kills_command_and_child(self):
         with tempfile.TemporaryDirectory() as directory:

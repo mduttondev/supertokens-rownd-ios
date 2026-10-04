@@ -41,5 +41,14 @@ if [[ -z "$udid" ]]; then
 fi
 
 echo "Using iPhone 17: $udid ($runtime_id, SDK $sdk_version)"
-python3 "$(dirname "$0")/boot-ios-simulator.py" "$udid"
-printf 'IOS_SIMULATOR_UDID=%s\nIOS_SIMULATOR_DESTINATION=platform=iOS Simulator,id=%s\n' "$udid" "$udid" >> "$GITHUB_ENV"
+# Try a different installed runtime after a failed boot, not the same stalled device.
+fallback_runtime_id="$(jq -r --arg primary "$runtime_id" --arg type "$device_type" '
+  [.runtimes[] | select(.isAvailable == true)
+    | select(.identifier | startswith("com.apple.CoreSimulator.SimRuntime.iOS-"))
+    | select(any(.supportedDeviceTypes[]?; .identifier == $type))
+    | select(.identifier != $primary)]
+  | sort_by([(.version | split(".") | map(tonumber)), .identifier])
+  | last | .identifier // $primary
+' <<< "$runtimes")"
+echo "If readiness fails: fresh CI device on $fallback_runtime_id (newest supported alternate, or same runtime if none)"
+python3 "$(dirname "$0")/boot-ios-simulator.py" "$udid" "$fallback_runtime_id" "$device_type"

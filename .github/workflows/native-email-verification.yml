@@ -63,10 +63,8 @@ jobs:
           cache: npm
 
       - name: Set up Docker
-        timeout-minutes: 15
+        timeout-minutes: 10
         uses: ./.github/actions/setup-e2e
-        with:
-          core-image: ${{ inputs.core_image }}
 
       - name: Install dependencies
         run: |

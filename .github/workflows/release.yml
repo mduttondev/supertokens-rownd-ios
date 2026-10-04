@@ -115,7 +115,7 @@ jobs:
           cache: npm
 
       - name: Set up Docker
-        timeout-minutes: 15
+        timeout-minutes: 10
         uses: ./.github/actions/setup-e2e
 
       - name: Install iOS SDK dependencies
@@ -123,7 +123,8 @@ jobs:
         run: npm ci
 
       - name: Install Hub dependencies
-        timeout-minutes: 4
+        # A cold install on the Intel runner completed its npm summary after 4m10s.
+        timeout-minutes: 8
         run: npm ci --prefix supertokens-rownd-hub
 
       - name: Resolve Swift dependencies

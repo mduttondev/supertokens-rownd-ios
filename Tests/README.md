@@ -60,9 +60,11 @@ The native-email compatibility workflow runs its stale-authentication and Safari
 
 - Docker tools: only the three pinned download archives, keyed by runner OS/architecture and the setup script. Checksums are verified even on hits; executables and VM disks are excluded.
 - Swift: bare repositories and binary artifacts only, keyed by OS/architecture, Xcode, workspace, package manifest, and lockfiles. Exact hits skip remote package updates; related lockfile revisions can reuse downloads but still update repositories. Uploads stop above 768 MiB; checkouts and DerivedData are excluded. `IOS_SWIFTPM_CACHE` supplies the resolver/build download directory.
-- Docker images: Postgres, Core, and the pinned Testcontainers reaper in one gzip-level-1 archive, capped at 750 MiB. Keys include architecture, selected Core image, dependency lockfile, cache/setup scripts, and UTC week; no cross-week fallback, so mutable tags refresh weekly. Digest-selected Core images are pulled separately because Docker save/load does not preserve registry digest references. Hits load images directly; misses pay pull/compression/upload once. The script reports pull, archive, and load durations and archive size.
+- Docker images are pulled on demand by the harness. Image archiving is intentionally disabled: a cold Intel CI run exhausted the setup deadline creating an archive and never uploaded it.
 
-Compare GitHub cache restore/save and resolver/image-load durations against cold download time before increasing these budgets. Local measurements cannot establish GitHub transfer cost; avoid expanding these caches to build products or entire tool/VM directories.
+CI simulator provisioning prefers an available iPhone 17 runtime matching the SDK. After a failed readiness check, it shuts down only the selected device and creates a fresh `Rownd CI fallback` device on the newest supported alternate runtime (or the same runtime if no alternate exists). It exports only the UDID that passes readiness. The workflow enforces a ten-minute provisioning limit; discovery, diagnostics, and cleanup can reduce the time available for the second attempt. No devices are erased or deleted and CoreSimulator is not restarted globally.
+
+Compare GitHub cache restore/save and resolver durations against cold download time before increasing these budgets. Local measurements cannot establish GitHub transfer cost; avoid expanding these caches to build products or entire tool/VM directories.
 
 ## Writing tests
 
