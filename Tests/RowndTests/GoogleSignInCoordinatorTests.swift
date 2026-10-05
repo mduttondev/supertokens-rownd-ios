@@ -65,6 +65,39 @@ import Testing
         }
     }
 
+    @Test func successAfterHubRequestIsReplacedStillCompletesWithoutReopeningHub() async throws {
+        try await withGoogleSignInHarness { coordinator, recorder in
+            let releaseSigninup = GoogleSignInGate()
+            let signinupStarted = GoogleSignInGate()
+            coordinator.signInWithGoogle = { _ in
+                await signinupStarted.open()
+                await releaseSigninup.wait()
+                return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false)
+            }
+            coordinator.currentAccessToken = { "google-access-token" }
+
+            let attemptID = await coordinator.beginAttempt(emitsSignInStarted: false)
+            let attempt = Task { @MainActor in
+                await coordinator.completeSignIn(idToken: "google-id-token", intent: nil, attemptID: attemptID)
+            }
+            _ = await signinupStarted.waitUntilOpen()
+
+            let newerRequestID = UUID()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing, signInType: .apple),
+                    requestID: newerRequestID
+                )
+            }
+            await releaseSigninup.open()
+            await attempt.value
+
+            #expect(recorder.hubSteps == ["completing", "completing"])
+            #expect(recorder.events.map(\.event) == [.signInCompleted])
+            #expect(await Rownd.isNativeHubRequestActive(newerRequestID))
+        }
+    }
+
     @Test func delayedRefusalDoesNotReplaceNewerHubRequest() async throws {
         try await withGoogleSignInHarness { coordinator, recorder in
             let releaseSigninup = GoogleSignInGate()
