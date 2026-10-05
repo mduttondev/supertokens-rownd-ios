@@ -27,6 +27,28 @@ public struct RowndEvent: Codable {
     public var data: [String: AnyCodable?]?
 }
 
+extension RowndEvent {
+    static func signInStarted(method: SignInType) -> RowndEvent {
+        RowndEvent(event: .signInStarted, data: ["method": AnyCodable(method.rawValue)])
+    }
+
+    /// Server refusals carry their raw `status` as `reason` and server `reason` as `message`.
+    static func signInFailed(method: SignInType, error: Error) -> RowndEvent {
+        var data: [String: AnyCodable?] = ["method": AnyCodable(method.rawValue)]
+        if let refusal = error as? SuperTokensSignInUpRefusedError {
+            if let status = refusal.status {
+                data["reason"] = AnyCodable(status)
+            }
+            if let reason = refusal.reason {
+                data["message"] = AnyCodable(reason)
+            }
+        } else {
+            data["message"] = AnyCodable(String(describing: error))
+        }
+        return RowndEvent(event: .signInFailed, data: data)
+    }
+}
+
 public protocol RowndEventHandlerDelegate: AnyObject {
     func handleRowndEvent(_ event: RowndEvent)
 }

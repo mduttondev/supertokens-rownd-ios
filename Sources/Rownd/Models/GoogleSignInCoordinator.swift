@@ -15,6 +15,15 @@ class GoogleSignInCoordinator: NSObject {
     var parent: Rownd
     var intent: RowndSignInIntent?
     var signInClient = SuperTokensThirdPartySignInClient()
+    var syncAuthState: () async -> Void = {
+        await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+    }
+    var currentAccessToken: () async -> String? = {
+        await SuperTokensSessionBridge.getAccessToken()
+    }
+    var emitEvent: @MainActor (RowndEvent) -> Void = { event in
+        RowndEventEmitter.emit(event)
+    }
 
     init(_ parent: Rownd) {
         self.parent = parent
@@ -48,7 +57,8 @@ class GoogleSignInCoordinator: NSObject {
                 logger.error("Failed to retrieve root view controller")
                 return
             }
-            
+            emitEvent(.signInStarted(method: .google))
+
             do {
                 let result = try await GIDSignIn.sharedInstance.signIn(
                     withPresenting: rootViewController,
@@ -56,8 +66,7 @@ class GoogleSignInCoordinator: NSObject {
                 )
                 
                 guard let idToken = result.user.idToken else {
-                    Rownd.customerWebViews.evaluateJavaScript(webViewId: webViewId, code: "window.rownd.requestSignIn({ 'login_step': 'error', 'sign_in_type': 'google' });")
-                    logger.error("Google sign-in failed. Either no ID token was present, or an error was thrown.")
+                    failSignIn(RowndError("Google sign-in did not return an ID token"), webViewId: webViewId)
                     return
                 }
                 
@@ -66,10 +75,10 @@ class GoogleSignInCoordinator: NSObject {
                     Rownd.customerWebViews.evaluateJavaScript(webViewId: webViewId, code: "window.rownd.requestSignIn({ 'login_step': 'completing' });")
                     
                     _ = try await signInClient.signInWithGoogle(idToken: idToken.tokenString)
-                    await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
+                    await syncAuthState()
 
-                    guard let accessToken = await SuperTokensSessionBridge.getAccessToken() else {
-                        logger.error("Token response is empty")
+                    guard let accessToken = await currentAccessToken() else {
+                        failSignIn(RowndError("Token response is empty"), webViewId: webViewId)
                         return
                     }
                     
@@ -103,13 +112,15 @@ class GoogleSignInCoordinator: NSObject {
                         return
                     } catch {
                         logger.error("Failed to build rph_init hash string: \(String(describing: error))")
+                        failSignIn(error, webViewId: webViewId)
                         return
                     }
-                } catch ApiError.generic(let errorInfo) {
-                    logger.error("Google sign-in failed during Rownd token exchange. Error: \(String(describing: errorInfo))")
+                } catch {
+                    failSignIn(error, webViewId: webViewId)
                 }
             } catch {
-                logger.error("Google sign-in failed during Rownd token exchange. Error: \(String(describing: error))")
+                guard !Self.isCancellation(error) else { return }
+                failSignIn(error, webViewId: webViewId)
             }
         }
     }
@@ -151,6 +162,7 @@ class GoogleSignInCoordinator: NSObject {
                 defaultSignInFlow()
                 return
             }
+            emitEvent(.signInStarted(method: .google))
 
             do {
                 let result = try await GIDSignIn.sharedInstance.signIn(
@@ -159,72 +171,79 @@ class GoogleSignInCoordinator: NSObject {
                 )
 
                 guard let idToken = result.user.idToken else {
-                    Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                        loginStep: .error,
-                        signInType: .google
-                    ))
-                    logger.error("Google sign-in failed. Either no ID token was present, or an error was thrown.")
+                    failSignIn(RowndError("Google sign-in did not return an ID token"))
                     return
                 }
-
-                Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                    loginStep: .completing
-                ))
 
                 logger.debug("Sign-in handshake with Google completed successfully.")
-                do {
-                    let signInResponse = try await signInClient.signInWithGoogle(idToken: idToken.tokenString)
-                    await SuperTokensSessionBridge.syncRowndAuthStateFromSuperTokens()
-
-                    Task { @MainActor in
-                        Context.currentContext.store.dispatch(UserData.fetch())
-                        Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.google))
-
-                        Rownd.requestSignIn(
-                            jsFnOptions: RowndSignInJsOptions(
-                                loginStep: .success,
-                                intent: intent,
-                                userType: signInResponse.userType,
-                                appVariantUserType: signInResponse.userType
-                            )
-                        )
-                        
-                        RowndEventEmitter.emit(RowndEvent(
-                            event: .signInCompleted,
-                            data: [
-                                "method": AnyCodable(SignInType.google.rawValue),
-                                "user_type": AnyCodable(signInResponse.userType.rawValue),
-                                "app_variant_user_type": AnyCodable(signInResponse.userType.rawValue)
-                            ]
-                        ))
-                    }
-                    return
-                } catch ApiError.generic(let errorInfo) {
-                    if errorInfo.code == "E_SIGN_IN_USER_NOT_FOUND" {
-                        Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                            token: idToken.tokenString,
-                            loginStep: .noAccount,
-                            intent: .signIn
-                        ))
-                    } else {
-                        DispatchQueue.main.async {
-                            Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                                loginStep: .error,
-                                signInType: .google
-                            ))
-                        }
-                    }
-                    logger.error("Google sign-in failed during Rownd token exchange. Error: \(String(describing: errorInfo))")
-                    return
-                } catch {
-                    Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
-                        loginStep: .error,
-                        signInType: .google
-                    ))
-                    logger.error("Google sign-in failed during Rownd token exchange. Error: \(String(describing: error))")
-                    return
-                }
+                await completeSignIn(idToken: idToken.tokenString, intent: intent)
+            } catch {
+                guard !Self.isCancellation(error) else { return }
+                failSignIn(error)
             }
         }
+    }
+
+    @MainActor func completeSignIn(idToken: String, intent: RowndSignInIntent?) async {
+        Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
+            loginStep: .completing
+        ))
+
+        do {
+            let signInResponse = try await signInClient.signInWithGoogle(idToken: idToken)
+            await syncAuthState()
+            guard await currentAccessToken() != nil else {
+                failSignIn(RowndError("Token response is empty"))
+                return
+            }
+
+            Context.currentContext.store.dispatch(UserData.fetch())
+            Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.google))
+
+            Rownd.requestSignIn(
+                jsFnOptions: RowndSignInJsOptions(
+                    loginStep: .success,
+                    intent: intent,
+                    userType: signInResponse.userType,
+                    appVariantUserType: signInResponse.userType
+                )
+            )
+
+            emitEvent(RowndEvent(
+                event: .signInCompleted,
+                data: [
+                    "method": AnyCodable(SignInType.google.rawValue),
+                    "user_type": AnyCodable(signInResponse.userType.rawValue),
+                    "app_variant_user_type": AnyCodable(signInResponse.userType.rawValue)
+                ]
+            ))
+        } catch ApiError.generic(let errorInfo) where errorInfo.code == "E_SIGN_IN_USER_NOT_FOUND" {
+            Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
+                token: idToken,
+                loginStep: .noAccount,
+                intent: .signIn
+            ))
+            logger.error("Google sign-in failed during Rownd token exchange. Error: \(String(describing: errorInfo))")
+        } catch {
+            failSignIn(error)
+        }
+    }
+
+    /// Moves the Hub to its error step and emits `signInFailed`; `webViewId` targets a customer web view's Hub.
+    @MainActor private func failSignIn(_ error: Error, webViewId: String? = nil) {
+        logger.error("Google sign-in failed. Error: \(String(describing: error))")
+        if let webViewId {
+            Rownd.customerWebViews.evaluateJavaScript(webViewId: webViewId, code: "window.rownd.requestSignIn({ 'login_step': 'error', 'sign_in_type': 'google' });")
+        } else {
+            Rownd.requestSignIn(jsFnOptions: RowndSignInJsOptions(
+                loginStep: .error,
+                signInType: .google
+            ))
+        }
+        emitEvent(.signInFailed(method: .google, error: error))
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        (error as? GIDSignInError)?.code == .canceled
     }
 }

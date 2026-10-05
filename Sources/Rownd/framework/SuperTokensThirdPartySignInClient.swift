@@ -38,7 +38,18 @@ struct SuperTokensThirdPartySignInResponse {
 
     fileprivate struct Body: Decodable {
         let status: String?
+        let reason: String?
         let createdNewRecipeUser: Bool?
+    }
+}
+
+/// A signinup response that arrived with a 2xx code but a `status` other than `OK`.
+struct SuperTokensSignInUpRefusedError: Error, CustomStringConvertible {
+    let status: String?
+    let reason: String?
+
+    var description: String {
+        "SuperTokens signinup returned status \(status ?? "<missing>")"
     }
 }
 
@@ -161,10 +172,13 @@ struct SuperTokensThirdPartySignInClient {
             throw RowndError("SuperTokens signinup failed with status code \(httpResponse.statusCode)")
         }
 
-        return (
-            try JSONDecoder().decode(SuperTokensThirdPartySignInResponse.Body.self, from: data),
-            httpResponse
-        )
+        let decodedBody = try JSONDecoder().decode(SuperTokensThirdPartySignInResponse.Body.self, from: data)
+        // FDI reports refusals such as SIGN_IN_UP_NOT_ALLOWED with HTTP 200, and a missing status is treated the same way.
+        guard decodedBody.status == "OK" else {
+            throw SuperTokensSignInUpRefusedError(status: decodedBody.status, reason: decodedBody.reason)
+        }
+
+        return (decodedBody, httpResponse)
     }
 
     private static func sessionTokens(from response: HTTPURLResponse) throws -> SuperTokensSessionTokens {

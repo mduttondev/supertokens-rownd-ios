@@ -463,9 +463,13 @@ Here's a list of events that the Rownd SDK emits and the corresponding data that
 
         ```javascript
         {
-            reason: String;
+            reason: String | optional,
+            message: String | optional,
+            method: "google" | "apple" | optional
         }
         ```
+
+        <p>For native Google and Apple sign-in, a SuperTokens refusal such as <code>SIGN_IN_UP_NOT_ALLOWED</code> sets <code>reason</code> to the server's <code>status</code> and <code>message</code> to the server's <code>reason</code>, both unchanged. Other native failures omit <code>reason</code> and describe the error in <code>message</code>.</p>
 
         </td>
     </tr>

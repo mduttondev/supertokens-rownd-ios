@@ -293,6 +293,70 @@ import Testing
         }
     }
 
+    @Test func refusedSigninupShowsErrorAndEmitsSignInFailedWithoutCompletion() async throws {
+        try await withGlobalTestLock {
+            let recorder = AppleSignInStepRecorder()
+            let events = AppleEventRecorder()
+            let originalDisplayHubHandler = Rownd.displayHubHandler
+            let (store, originalAppConfig) = await MainActor.run {
+                let store = Context.currentContext.store
+                return (store, store.state.appConfig)
+            }
+            defer { Rownd.displayHubHandler = originalDisplayHubHandler }
+            Rownd.displayHubHandler = { _, options in
+                guard let options = options as? RowndSignInJsOptions,
+                      let loginStep = options.loginStep else { return }
+                recorder.append("hub-\(loginStep.rawValue)")
+            }
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: Self.appConfig(
+                    iosClientType: "native-apple-client"
+                )))
+            }
+
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.signInWithApple = { _, _ in
+                throw SuperTokensSignInUpRefusedError(
+                    status: "SIGN_IN_UP_NOT_ALLOWED",
+                    reason: "Cannot sign in / up due to security reasons."
+                )
+            }
+            coordinator.onAdopt = { Issue.record("A refused signinup must not adopt a session") }
+            coordinator.syncAuthState = { _, _ in
+                Issue.record("A refused signinup must not synchronize auth")
+                return true
+            }
+            coordinator.waitBeforeCompletion = {}
+            coordinator.dismissHub = { _ in recorder.append("dismiss") }
+            coordinator.emitEvent = { event in events.append(event) }
+
+            let requestID = UUID()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: requestID
+                )
+            }
+            await coordinator.completeSignIn(
+                authorizationCode: "apple-auth-code",
+                fullName: nil,
+                email: nil,
+                intent: nil,
+                hubRequestID: requestID
+            )
+
+            #expect(recorder.steps == ["hub-completing", "hub-error"])
+            #expect(events.events.map(\.event) == [.signInFailed])
+            let data = try #require(events.events.first?.data)
+            #expect(data["reason"]??.value as? String == "SIGN_IN_UP_NOT_ALLOWED")
+            #expect(data["message"]??.value as? String == "Cannot sign in / up due to security reasons.")
+            #expect(data["method"]??.value as? String == SignInType.apple.rawValue)
+            await MainActor.run {
+                store.dispatch(SetAppConfig(payload: originalAppConfig))
+            }
+        }
+    }
+
     @Test func appleEnrichmentUsesOnlyOperationScopedData() throws {
         let legacyKey = "userAppleSignInData"
         UserDefaults.standard.set(
@@ -2500,6 +2564,19 @@ private final class AppleSignInStepRecorder: @unchecked Sendable {
         lock.lock()
         recordedSteps.append(step)
         lock.unlock()
+    }
+}
+
+private final class AppleEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedEvents: [RowndEvent] = []
+
+    var events: [RowndEvent] {
+        lock.withLock { recordedEvents }
+    }
+
+    func append(_ event: RowndEvent) {
+        lock.withLock { recordedEvents.append(event) }
     }
 }
 

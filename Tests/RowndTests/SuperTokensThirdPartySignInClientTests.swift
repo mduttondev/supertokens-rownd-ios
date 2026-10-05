@@ -228,6 +228,78 @@ import Testing
         }
     }
 
+    @Test func googleExchangeThrowsRefusalForNonOKStatus() async throws {
+        try await withGlobalTestLock {
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"status":"SIGN_IN_UP_NOT_ALLOWED","reason":"Cannot sign in / up due to security reasons."}"#.data(using: .utf8)!
+
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/auth",
+                session: URLSession(configuration: configuration)
+            )
+
+            do {
+                _ = try await client.signInWithGoogle(idToken: "google-id-token")
+                Issue.record("Expected SIGN_IN_UP_NOT_ALLOWED to fail")
+            } catch let error as SuperTokensSignInUpRefusedError {
+                #expect(error.status == "SIGN_IN_UP_NOT_ALLOWED")
+                #expect(error.reason == "Cannot sign in / up due to security reasons.")
+            }
+        }
+    }
+
+    @Test func googleExchangeTreatsMissingStatusAsRefusal() async throws {
+        try await withGlobalTestLock {
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"createdNewRecipeUser":true}"#.data(using: .utf8)!
+
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/auth",
+                session: URLSession(configuration: configuration)
+            )
+
+            do {
+                _ = try await client.signInWithGoogle(idToken: "google-id-token")
+                Issue.record("Expected a missing status to fail")
+            } catch let error as SuperTokensSignInUpRefusedError {
+                #expect(error.status == nil)
+                #expect(error.reason == nil)
+            }
+        }
+    }
+
+    @Test func appleExchangeThrowsRefusalBeforeReadingSessionHeaders() async throws {
+        try await withGlobalTestLock {
+            ThirdPartySignInURLProtocol.reset()
+            ThirdPartySignInURLProtocol.responseBody = #"{"status":"SIGN_IN_UP_NOT_ALLOWED","reason":"Cannot sign in / up due to security reasons."}"#.data(using: .utf8)!
+            ThirdPartySignInURLProtocol.responseHeaders = Self.appleSessionHeaders
+
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ThirdPartySignInURLProtocol.self]
+            let session = URLSession(configuration: configuration)
+            let client = SuperTokensThirdPartySignInClient(
+                apiDomain: "https://auth.example.com",
+                apiBasePath: "/auth",
+                session: session,
+                appleSession: session
+            )
+
+            do {
+                _ = try await client.signInWithApple(authorizationCode: "apple-auth-code", clientType: "ios")
+                Issue.record("Expected SIGN_IN_UP_NOT_ALLOWED to fail even with session headers")
+            } catch let error as SuperTokensSignInUpRefusedError {
+                #expect(error.status == "SIGN_IN_UP_NOT_ALLOWED")
+                #expect(error.reason == "Cannot sign in / up due to security reasons.")
+            }
+        }
+    }
+
     @Test func exchangeNormalizesBasePathSlashes() async throws {
         try await withGlobalTestLock {
             ThirdPartySignInURLProtocol.reset()

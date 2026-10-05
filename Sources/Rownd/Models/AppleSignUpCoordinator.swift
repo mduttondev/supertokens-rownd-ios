@@ -155,6 +155,7 @@ class AppleSignUpCoordinator: NSObject {
         authorizationController.presentationContextProvider = authorizationDelegate
         authorizationController.delegate = authorizationDelegate
         registerAuthorizationOperation(controllerID: ObjectIdentifier(authorizationController))
+        emitEvent(.signInStarted(method: .apple))
         authorizationController.performRequests()
     }
 
@@ -295,6 +296,7 @@ class AppleSignUpCoordinator: NSObject {
         do {
             signInResponse = try await signInWithApple(authorizationCode, clientType)
         } catch {
+            logger.error("Apple sign-in failed during SuperTokens signinup. Error: \(String(describing: error))")
             guard await canCommitAuthState(
                 operationID: operationID,
                 hubRequestID: hubRequestID,
@@ -313,6 +315,7 @@ class AppleSignUpCoordinator: NSObject {
                     ),
                     requestID: hubRequestID
                 )
+                self.emitEvent(.signInFailed(method: .apple, error: error))
             }
             return
         }
