@@ -25,6 +25,13 @@ class GoogleSignInCoordinator: NSObject {
     var emitEvent: @MainActor (RowndEvent) -> Void = { event in
         RowndEventEmitter.emit(event)
     }
+    var dispatchSignInActions: @MainActor () -> Void = {
+        Context.currentContext.store.dispatch(UserData.fetch())
+        Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.google))
+    }
+    var evaluateCustomerWebViewJavaScript: @MainActor (String, String) -> Void = { webViewId, code in
+        Rownd.customerWebViews.evaluateJavaScript(webViewId: webViewId, code: code)
+    }
 
     init(_ parent: Rownd, signInClient: SuperTokensThirdPartySignInClient = SuperTokensThirdPartySignInClient()) {
         self.parent = parent
@@ -74,58 +81,64 @@ class GoogleSignInCoordinator: NSObject {
                     failSignIn(RowndError("Google sign-in did not return an ID token"), attemptID: attemptID, webViewId: webViewId)
                     return
                 }
-                
+
                 logger.debug("Sign-in handshake with Google completed successfully.")
-                do {
-                    Rownd.customerWebViews.evaluateJavaScript(webViewId: webViewId, code: "window.rownd.requestSignIn({ 'login_step': 'completing' });")
-                    
-                    _ = try await signInWithGoogle(idToken.tokenString)
-                    guard await syncAuthState(), let accessToken = await currentAccessToken() else {
-                        failSignIn(Self.authSyncFailure, attemptID: attemptID, webViewId: webViewId)
-                        return
-                    }
-                    guard isCurrentAttempt(attemptID) else { return }
-                    
-                    // Reload the web view page with rph_init appended to the URL fragment in order
-                    // to complete the sign-in
-                    do {
-                        let jwt = try decode(jwt: accessToken)
-                        let appId = jwt.audience?.first(where: {
-                            return $0.starts(with: "app:")
-                        })?.replacingOccurrences(of: "app:", with: "")
-                        let appUserId = jwt.claim(name: "https://auth.rownd.io/app_user_id")
-                        
-                        let rphInit = RphInit(
-                            accessToken: accessToken,
-                            refreshToken: SuperTokensSessionBridge.getRefreshToken(),
-                            frontToken: SuperTokensSessionBridge.getFrontToken(),
-                            antiCSRF: SuperTokensSessionBridge.getAntiCSRF(),
-                            appId: appId ?? Context.currentContext.store.state.appConfig.id,
-                            appUserId: appUserId.string
-                        )
-                        
-                        let rphInitString = try rphInit.valueForURLFragment()
-                        Rownd.customerWebViews.evaluateJavaScript(webViewId: webViewId, code: """
-                            let url = new URL(window.location.href);
-                            let fragmentParts = url.hash?.split(',') || [];
-                            fragmentParts.push(`rph_init=\(rphInitString)`);
-                            url.hash = fragmentParts.join(',');
-                            window.location.replace(url.toString());
-                            window.location.reload(); // It would be best if we didn't have to reload, but the Hub has problems handling updated rph_ hash values without doing a full reload.
-                        """)
-                        return
-                    } catch {
-                        logger.error("Failed to build rph_init hash string: \(String(describing: error))")
-                        failSignIn(error, attemptID: attemptID, webViewId: webViewId)
-                        return
-                    }
-                } catch {
-                    failSignIn(error, attemptID: attemptID, webViewId: webViewId)
-                }
+                await completeSignIn(idToken: idToken.tokenString, webViewId: webViewId, attemptID: attemptID)
             } catch {
                 guard !Self.isCancellation(error) else { return }
                 failSignIn(error, attemptID: attemptID, webViewId: webViewId)
             }
+        }
+    }
+
+    @MainActor func completeSignIn(idToken: String, webViewId: String, attemptID: UUID) async {
+        evaluateCustomerWebViewJavaScript(webViewId, "window.rownd.requestSignIn({ 'login_step': 'completing' });")
+
+        do {
+            let signInResponse = try await signInWithGoogle(idToken)
+            guard await syncAuthState(), let accessToken = await currentAccessToken() else {
+                failSignIn(Self.authSyncFailure, attemptID: attemptID, webViewId: webViewId)
+                return
+            }
+            guard isCurrentAttempt(attemptID) else {
+                // Signinup already adopted the session, so report it natively without reloading the newer flow's page.
+                reportSignInCompleted(signInResponse)
+                return
+            }
+
+            // Reload the web view page with rph_init appended to the URL fragment in order
+            // to complete the sign-in
+            do {
+                let jwt = try decode(jwt: accessToken)
+                let appId = jwt.audience?.first(where: {
+                    return $0.starts(with: "app:")
+                })?.replacingOccurrences(of: "app:", with: "")
+                let appUserId = jwt.claim(name: "https://auth.rownd.io/app_user_id")
+
+                let rphInit = RphInit(
+                    accessToken: accessToken,
+                    refreshToken: SuperTokensSessionBridge.getRefreshToken(),
+                    frontToken: SuperTokensSessionBridge.getFrontToken(),
+                    antiCSRF: SuperTokensSessionBridge.getAntiCSRF(),
+                    appId: appId ?? Context.currentContext.store.state.appConfig.id,
+                    appUserId: appUserId.string
+                )
+
+                let rphInitString = try rphInit.valueForURLFragment()
+                evaluateCustomerWebViewJavaScript(webViewId, """
+                    let url = new URL(window.location.href);
+                    let fragmentParts = url.hash?.split(',') || [];
+                    fragmentParts.push(`rph_init=\(rphInitString)`);
+                    url.hash = fragmentParts.join(',');
+                    window.location.replace(url.toString());
+                    window.location.reload(); // It would be best if we didn't have to reload, but the Hub has problems handling updated rph_ hash values without doing a full reload.
+                """)
+            } catch {
+                logger.error("Failed to build rph_init hash string: \(String(describing: error))")
+                failSignIn(error, attemptID: attemptID, webViewId: webViewId)
+            }
+        } catch {
+            failSignIn(error, attemptID: attemptID, webViewId: webViewId)
         }
     }
 
@@ -211,32 +224,22 @@ class GoogleSignInCoordinator: NSObject {
                 failSignIn(Self.authSyncFailure, attemptID: attemptID, hubRequestID: hubRequestID)
                 return
             }
-            guard isCurrentAttempt(attemptID) else { return }
-
-            Context.currentContext.store.dispatch(UserData.fetch())
-            Context.currentContext.store.dispatch(SetLastSignInMethod(payload: SignInMethodTypes.google))
-
-            Rownd.updateSignInForNativeCompletion(
-                jsFnOptions: RowndSignInJsOptions(
-                    loginStep: .success,
-                    intent: intent,
-                    userType: signInResponse.userType,
-                    appVariantUserType: signInResponse.userType
-                ),
-                requestID: hubRequestID
-            )
-
-            emitEvent(RowndEvent(
-                event: .signInCompleted,
-                data: [
-                    "method": AnyCodable(SignInType.google.rawValue),
-                    "user_type": AnyCodable(signInResponse.userType.rawValue),
-                    "app_variant_user_type": AnyCodable(signInResponse.userType.rawValue)
-                ]
-            ))
+            // Signinup already adopted the session, so a superseded attempt still reports it; only the Hub UI stays scoped.
+            if isCurrentAttempt(attemptID) {
+                Rownd.updateSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(
+                        loginStep: .success,
+                        intent: intent,
+                        userType: signInResponse.userType,
+                        appVariantUserType: signInResponse.userType
+                    ),
+                    requestID: hubRequestID
+                )
+            }
+            reportSignInCompleted(signInResponse)
         } catch ApiError.generic(let errorInfo) where errorInfo.code == "E_SIGN_IN_USER_NOT_FOUND" {
             logger.error("Google sign-in failed during Rownd token exchange. Error: \(String(describing: errorInfo))")
-            guard isCurrentAttempt(attemptID, hubRequestID: hubRequestID) else { return }
+            guard isCurrentAttempt(attemptID) else { return }
             Rownd.updateSignInForNativeCompletion(
                 jsFnOptions: RowndSignInJsOptions(
                     token: idToken,
@@ -250,17 +253,26 @@ class GoogleSignInCoordinator: NSObject {
         }
     }
 
-    /// A newer Google attempt, or a newer Hub request than `hubRequestID`, makes this attempt stale.
-    @MainActor private func isCurrentAttempt(_ attemptID: UUID, hubRequestID: UUID? = nil) -> Bool {
-        guard currentAttemptID == attemptID else { return false }
-        guard let hubRequestID else { return true }
-        return Rownd.canCommitAuthState(forNativeHubRequest: hubRequestID)
+    @MainActor private func isCurrentAttempt(_ attemptID: UUID) -> Bool {
+        currentAttemptID == attemptID
     }
 
-    /// Shows the error step on the attempt's own Hub request (or a new one before it exists) and emits `signInFailed`.
+    @MainActor private func reportSignInCompleted(_ signInResponse: SuperTokensThirdPartySignInResponse) {
+        dispatchSignInActions()
+        emitEvent(RowndEvent(
+            event: .signInCompleted,
+            data: [
+                "method": AnyCodable(SignInType.google.rawValue),
+                "user_type": AnyCodable(signInResponse.userType.rawValue),
+                "app_variant_user_type": AnyCodable(signInResponse.userType.rawValue)
+            ]
+        ))
+    }
+
+    /// Emits `signInFailed` for the current attempt; the error step lands only while its Hub request is still active.
     @MainActor private func failSignIn(_ error: Error, attemptID: UUID, hubRequestID: UUID? = nil) {
         logger.error("Google sign-in failed. Error: \(String(describing: error))")
-        guard isCurrentAttempt(attemptID, hubRequestID: hubRequestID) else { return }
+        guard isCurrentAttempt(attemptID) else { return }
         let errorOptions = RowndSignInJsOptions(loginStep: .error, signInType: .google)
         if let hubRequestID {
             Rownd.updateSignInForNativeCompletion(jsFnOptions: errorOptions, requestID: hubRequestID)
@@ -273,7 +285,7 @@ class GoogleSignInCoordinator: NSObject {
     @MainActor private func failSignIn(_ error: Error, attemptID: UUID, webViewId: String) {
         logger.error("Google sign-in failed. Error: \(String(describing: error))")
         guard isCurrentAttempt(attemptID) else { return }
-        Rownd.customerWebViews.evaluateJavaScript(webViewId: webViewId, code: "window.rownd.requestSignIn({ 'login_step': 'error', 'sign_in_type': 'google' });")
+        evaluateCustomerWebViewJavaScript(webViewId, "window.rownd.requestSignIn({ 'login_step': 'error', 'sign_in_type': 'google' });")
         emitEvent(.signInFailed(method: .google, error: error))
     }
 

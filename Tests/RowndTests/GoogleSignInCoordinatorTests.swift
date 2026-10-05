@@ -9,6 +9,14 @@ import Testing
         status: "SIGN_IN_UP_NOT_ALLOWED",
         reason: "Cannot sign in / up due to security reasons."
     )
+    private static let accessTokenJWT = [#"{"alg":"none"}"#, #"{"aud":["app:test-app"]}"#]
+        .map {
+            Data($0.utf8).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        .joined(separator: ".") + ".signature"
 
     @Test func refusedSigninupShowsErrorAndEmitsSignInFailedWithoutCompletion() async throws {
         try await withGoogleSignInHarness { coordinator, recorder in
@@ -94,11 +102,92 @@ import Testing
 
             #expect(recorder.hubSteps == ["completing", "completing"])
             #expect(recorder.events.map(\.event) == [.signInCompleted])
+            #expect(recorder.signInActionDispatches == 1)
             #expect(await Rownd.isNativeHubRequestActive(newerRequestID))
         }
     }
 
-    @Test func delayedRefusalDoesNotReplaceNewerHubRequest() async throws {
+    @Test func supersededAttemptSuccessStillCompletesWithoutTouchingNewerHubRequest() async throws {
+        try await withGoogleSignInHarness { coordinator, recorder in
+            let releaseSigninup = GoogleSignInGate()
+            let signinupStarted = GoogleSignInGate()
+            coordinator.signInWithGoogle = { _ in
+                await signinupStarted.open()
+                await releaseSigninup.wait()
+                return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false)
+            }
+            coordinator.currentAccessToken = { "google-access-token" }
+
+            let staleAttemptID = await coordinator.beginAttempt(emitsSignInStarted: false)
+            let staleAttempt = Task { @MainActor in
+                await coordinator.completeSignIn(idToken: "google-id-token", intent: nil, attemptID: staleAttemptID)
+            }
+            _ = await signinupStarted.waitUntilOpen()
+
+            _ = await coordinator.beginAttempt(emitsSignInStarted: false)
+            let newerRequestID = UUID()
+            await MainActor.run {
+                Rownd.requestSignInForNativeCompletion(
+                    jsFnOptions: RowndSignInJsOptions(loginStep: .completing),
+                    requestID: newerRequestID
+                )
+            }
+            await releaseSigninup.open()
+            await staleAttempt.value
+
+            #expect(recorder.hubSteps == ["completing", "completing"])
+            #expect(recorder.events.map(\.event) == [.signInCompleted])
+            #expect(recorder.signInActionDispatches == 1)
+            #expect(await Rownd.isNativeHubRequestActive(newerRequestID))
+        }
+    }
+
+    @Test func currentWebViewSuccessReloadsWithRphInitAndLeavesCompletionToHub() async throws {
+        try await withGoogleSignInHarness { coordinator, recorder in
+            coordinator.signInWithGoogle = { _ in
+                SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: false)
+            }
+            coordinator.currentAccessToken = { Self.accessTokenJWT }
+
+            let attemptID = await coordinator.beginAttempt(emitsSignInStarted: false)
+            await coordinator.completeSignIn(idToken: "google-id-token", webViewId: "web-view", attemptID: attemptID)
+
+            #expect(recorder.webViewScripts.count == 2)
+            #expect(recorder.webViewScripts.last?.contains("rph_init=") == true)
+            #expect(recorder.events.isEmpty)
+            #expect(recorder.signInActionDispatches == 0)
+        }
+    }
+
+    @Test func supersededWebViewSuccessCompletesNativelyWithoutReload() async throws {
+        try await withGoogleSignInHarness { coordinator, recorder in
+            let releaseSigninup = GoogleSignInGate()
+            let signinupStarted = GoogleSignInGate()
+            coordinator.signInWithGoogle = { _ in
+                await signinupStarted.open()
+                await releaseSigninup.wait()
+                return SuperTokensThirdPartySignInResponse(status: "OK", createdNewRecipeUser: true)
+            }
+            coordinator.currentAccessToken = { Self.accessTokenJWT }
+
+            let staleAttemptID = await coordinator.beginAttempt(emitsSignInStarted: false)
+            let staleAttempt = Task { @MainActor in
+                await coordinator.completeSignIn(idToken: "google-id-token", webViewId: "web-view", attemptID: staleAttemptID)
+            }
+            _ = await signinupStarted.waitUntilOpen()
+            _ = await coordinator.beginAttempt(emitsSignInStarted: false)
+            await releaseSigninup.open()
+            await staleAttempt.value
+
+            #expect(recorder.webViewScripts.count == 1)
+            #expect(recorder.webViewScripts.contains { $0.contains("rph_init=") } == false)
+            #expect(recorder.events.map(\.event) == [.signInCompleted])
+            #expect(recorder.events.first?.data?["user_type"]??.value as? String == UserType.NewUser.rawValue)
+            #expect(recorder.signInActionDispatches == 1)
+        }
+    }
+
+    @Test func delayedRefusalReportsFailureWithoutReplacingNewerHubRequest() async throws {
         try await withGoogleSignInHarness { coordinator, recorder in
             let releaseSigninup = GoogleSignInGate()
             let signinupStarted = GoogleSignInGate()
@@ -125,7 +214,7 @@ import Testing
             await attempt.value
 
             #expect(recorder.hubSteps == ["completing", "completing"])
-            #expect(recorder.events.isEmpty)
+            #expect(recorder.events.map(\.event) == [.signInFailed])
             #expect(await Rownd.isNativeHubRequestActive(newerRequestID))
         }
     }
@@ -220,6 +309,8 @@ import Testing
             coordinator.syncAuthState = { true }
             coordinator.currentAccessToken = { nil }
             coordinator.emitEvent = recorder.recordEvent
+            coordinator.dispatchSignInActions = recorder.recordSignInActions
+            coordinator.evaluateCustomerWebViewJavaScript = recorder.recordWebViewScript
             try await body(coordinator, recorder)
         }
     }
@@ -237,6 +328,24 @@ private final class GoogleSignInRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recordedHubSteps: [String] = []
     private var recordedEvents: [RowndEvent] = []
+    private var recordedSignInActionDispatches = 0
+    private var recordedWebViewScripts: [String] = []
+
+    var signInActionDispatches: Int {
+        lock.withLock { recordedSignInActionDispatches }
+    }
+
+    var webViewScripts: [String] {
+        lock.withLock { recordedWebViewScripts }
+    }
+
+    func recordSignInActions() {
+        lock.withLock { recordedSignInActionDispatches += 1 }
+    }
+
+    func recordWebViewScript(_ webViewId: String, _ code: String) {
+        lock.withLock { recordedWebViewScripts.append(code) }
+    }
 
     var hubSteps: [String] {
         lock.withLock { recordedHubSteps }
