@@ -1527,6 +1527,46 @@ import Testing
         }
     }
 
+    @Test func onlyDirectAuthorizationOperationsEmitSignInStarted() async throws {
+        try await withGlobalTestLock {
+            let events = AppleEventRecorder()
+            let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
+            coordinator.emitEvent = { events.append($0) }
+            let controller = NSObject()
+
+            await coordinator.registerAuthorizationOperation(
+                controllerID: ObjectIdentifier(controller),
+                emitsSignInStarted: false
+            )
+            #expect(events.events.isEmpty)
+
+            await coordinator.registerAuthorizationOperation(
+                controllerID: ObjectIdentifier(controller),
+                emitsSignInStarted: true
+            )
+            #expect(events.events.map(\.event) == [.signInStarted])
+            #expect(events.events.first?.data?["method"]??.value as? String == SignInType.apple.rawValue)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func requestSignInEmitsStartOnlyWhenNotInitiatedByHub(_ initiatedByHub: Bool) async throws {
+        try await withGlobalTestLock {
+            let originalCoordinator = Rownd.appleSignUpCoordinator
+            defer { Rownd.appleSignUpCoordinator = originalCoordinator }
+            let coordinator = EntryPointRecordingAppleCoordinator(Rownd.getInstance())
+            Rownd.appleSignUpCoordinator = coordinator
+
+            Rownd.requestSignIn(
+                with: .appleId,
+                signInOptions: RowndSignInOptions(),
+                initiatedByHub: initiatedByHub
+            )
+
+            #expect(coordinator.emitsSignInStarted == [!initiatedByHub])
+        }
+    }
+
     @Test func authorizationOperationsFollowInitiationOrderNotCallbackOrder() async throws {
         try await withGlobalTestLock {
             let coordinator = TestAppleSignUpCoordinator(Rownd.getInstance())
@@ -2564,6 +2604,14 @@ private final class AppleSignInStepRecorder: @unchecked Sendable {
         lock.lock()
         recordedSteps.append(step)
         lock.unlock()
+    }
+}
+
+private final class EntryPointRecordingAppleCoordinator: AppleSignUpCoordinator, @unchecked Sendable {
+    private(set) var emitsSignInStarted: [Bool] = []
+
+    override func signIn(_ intent: RowndSignInIntent?, emitsSignInStarted: Bool) {
+        self.emitsSignInStarted.append(emitsSignInStarted)
     }
 }
 

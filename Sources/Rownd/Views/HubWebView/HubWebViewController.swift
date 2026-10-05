@@ -1014,7 +1014,8 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                     with: .appleId,
                     signInOptions: RowndSignInOptions(
                         intent: signInWithAppleMessage?.intent
-                    )
+                    ),
+                    initiatedByHub: true
                 )
 
             case .triggerSignInWithGoogle:
@@ -1022,7 +1023,7 @@ extension HubWebViewController: WKScriptMessageHandler, WKNavigationDelegate {
                 if case .triggerSignInWithGoogle(let message) = hubMessage.payload {
                     signInWithGoogleMessage = message
                 }
-                Rownd.requestSignIn(with: RowndSignInHint.googleId, signInOptions: RowndSignInOptions(intent: signInWithGoogleMessage?.intent, hint: signInWithGoogleMessage?.hint))
+                Rownd.requestSignIn(with: RowndSignInHint.googleId, signInOptions: RowndSignInOptions(intent: signInWithGoogleMessage?.intent, hint: signInWithGoogleMessage?.hint), initiatedByHub: true)
 
             case .signOut:
                 // Occasionally, the hub may send a sign-out message due to expired token

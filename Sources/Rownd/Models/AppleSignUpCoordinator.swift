@@ -134,13 +134,13 @@ class AppleSignUpCoordinator: NSObject {
         super.init()
     }
 
-    func signIn(_ intent: RowndSignInIntent?) {
+    func signIn(_ intent: RowndSignInIntent?, emitsSignInStarted: Bool) {
         DispatchQueue.main.async { [weak self] in
-            self?.signInOnMainActor(intent)
+            self?.signInOnMainActor(intent, emitsSignInStarted: emitsSignInStarted)
         }
     }
 
-    @MainActor private func signInOnMainActor(_ intent: RowndSignInIntent?) {
+    @MainActor private func signInOnMainActor(_ intent: RowndSignInIntent?, emitsSignInStarted: Bool) {
         self.intent = intent
         // Create an object of the ASAuthorizationAppleIDProvider
         let appleIDProvider = ASAuthorizationAppleIDProvider()
@@ -154,8 +154,10 @@ class AppleSignUpCoordinator: NSObject {
         // Assigning the delegates
         authorizationController.presentationContextProvider = authorizationDelegate
         authorizationController.delegate = authorizationDelegate
-        registerAuthorizationOperation(controllerID: ObjectIdentifier(authorizationController))
-        emitEvent(.signInStarted(method: .apple))
+        registerAuthorizationOperation(
+            controllerID: ObjectIdentifier(authorizationController),
+            emitsSignInStarted: emitsSignInStarted
+        )
         authorizationController.performRequests()
     }
 
@@ -508,7 +510,10 @@ class AppleSignUpCoordinator: NSObject {
     }
 
     @discardableResult
-    @MainActor func registerAuthorizationOperation(controllerID: ObjectIdentifier) -> UUID {
+    @MainActor func registerAuthorizationOperation(
+        controllerID: ObjectIdentifier,
+        emitsSignInStarted: Bool = false
+    ) -> UUID {
         completionTask?.cancel()
         invalidateAuthOperationPermits()
         let previousHubRequestID = currentHubRequestID
@@ -521,6 +526,9 @@ class AppleSignUpCoordinator: NSObject {
         authorizationOperations[controllerID] = operationID
         authOperationPermits[operationID] = captureAuthOperationPermit()
         retireHubRequest(previousHubRequestID)
+        if emitsSignInStarted {
+            emitEvent(.signInStarted(method: .apple))
+        }
         return operationID
     }
 

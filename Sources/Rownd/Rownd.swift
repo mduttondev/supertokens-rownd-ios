@@ -22,7 +22,7 @@ public class Rownd: NSObject {
     private let appStateListener = AppStateListener()
 
     public static let user = UserPropAccess()
-    private static var appleSignUpCoordinator: AppleSignUpCoordinator = AppleSignUpCoordinator(inst)
+    internal static var appleSignUpCoordinator: AppleSignUpCoordinator = AppleSignUpCoordinator(inst)
     internal static var googleSignInCoordinator: GoogleSignInCoordinator = GoogleSignInCoordinator(
         inst)
     @MainActor private var _bottomSheetController: BottomSheetViewController?
@@ -223,6 +223,16 @@ public class Rownd: NSObject {
     public static func requestSignIn(
         with: RowndSignInHint, signInOptions: RowndSignInOptions?, completion: (() -> Void)? = nil
     ) {
+        requestSignIn(with: with, signInOptions: signInOptions, initiatedByHub: false, completion: completion)
+    }
+
+    /// The Hub dispatches its own `signInStarted` before triggering native sign-in, so Hub-initiated calls skip the SDK's.
+    internal static func requestSignIn(
+        with: RowndSignInHint,
+        signInOptions: RowndSignInOptions?,
+        initiatedByHub: Bool,
+        completion: (() -> Void)? = nil
+    ) {
         let signInOptions = determineSignInOptions(signInOptions)
         switch with {
         case .phone:
@@ -230,12 +240,13 @@ public class Rownd: NSObject {
         case .email:
             requestSignIn(determineSignInOptions(signInOptions, signInType: SignInType.email))
         case .appleId:
-            appleSignUpCoordinator.signIn(signInOptions?.intent)
+            appleSignUpCoordinator.signIn(signInOptions?.intent, emitsSignInStarted: !initiatedByHub)
         case .googleId:
             Task {
                 await googleSignInCoordinator.signIn(
                     signInOptions?.intent,
-                    hint: signInOptions?.hint
+                    hint: signInOptions?.hint,
+                    emitsSignInStarted: !initiatedByHub
                 )
                 completion?()
             }
